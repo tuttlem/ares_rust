@@ -105,7 +105,17 @@ _entry:
 
 
    mov dword [pd +  0], 0x000083              ; map the zero page temporarily
-   mov dword [pd + 64], 0x01000083            ; map the kernel
+
+   ; Map first 8 MiB for the kernel (higher-half mapping reuses these entries)
+   mov   ecx, 0                                ; entry index
+.map_kernel_pages:
+   mov   eax, ecx
+   shl   eax, 21                               ; 2 MiB per entry
+   or    eax, 0x83                             ; present, writable, large page
+   mov   [pd + ecx * 8], eax
+   inc   ecx
+   cmp   ecx, 4                                ; 4 entries -> 8 MiB
+   jl    .map_kernel_pages
 
 
    mov   eax, pml4                            ; load cr3 with Pml4

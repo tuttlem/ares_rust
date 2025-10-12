@@ -3,6 +3,8 @@
 mod cpu;
 mod interrupts;
 mod klog;
+mod mem;
+mod sync;
 mod timer;
 
 use core::ffi::c_void;
@@ -20,6 +22,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
 
     interrupts::init();
+    mem::heap::init();
     timer::init();
 
     let vendor_raw = cpu::vendor_string();
@@ -38,6 +41,25 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     if features.has_ecx(cpu::feature::ecx::AVX) {
         klog::writeln("[kmain] AVX supported");
+    }
+
+    unsafe {
+        use core::alloc::Layout;
+        let layout = Layout::array::<u32>(16).unwrap();
+        let ptr = crate::mem::heap::allocate(layout) as *mut u32;
+        if ptr.is_null() {
+            klog::writeln("[heap] allocation failed");
+        } else {
+            for i in 0..16 {
+                ptr.add(i).write(i as u32);
+            }
+            klog!(
+                "[heap] allocated array addr=0x{:016X} first={} last={}\n",
+                ptr as u64,
+                ptr.read(),
+                ptr.add(15).read()
+            );
+        }
     }
 
     interrupts::enable();
