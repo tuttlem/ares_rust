@@ -1,5 +1,7 @@
 #![no_std]
 
+mod klog;
+
 use core::ffi::c_void;
 use core::hint::spin_loop;
 use core::panic::PanicInfo;
@@ -7,7 +9,12 @@ use core::ptr::write_volatile;
 
 #[no_mangle]
 pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> ! {
-    let _ = (multiboot_info, multiboot_magic);
+    let info_addr = multiboot_info as usize;
+
+    klog::init();
+    klog::writeln("[kmain] Booting Ares kernel");
+    klog!("[kmain] multiboot magic: 0x{:08X}\n", multiboot_magic);
+    klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
 
     write_banner(b"Welcome to Ares (Rust kmain)\0");
 
@@ -18,6 +25,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
+    klog::writeln("[kpanic] Kernel panic!");
     write_banner(b"Kernel panic!\0");
 
     loop {

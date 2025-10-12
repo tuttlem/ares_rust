@@ -19,7 +19,7 @@ boot_asm_object_files := $(patsubst $(boot_source_dir)/%.asm, $(boot_build_dir)/
 
 boot_object_files     := $(boot_asm_object_files)
 
-kernel_source_files   := $(shell find src/kernel -name "*.rs" 2>/dev/null)
+kernel_source_files   := $(shell find src/kernel -maxdepth 1 -name "*.rs" 2>/dev/null)
 kernel_object_files   := $(patsubst src/kernel/%.rs, build/kernel/%.o, $(kernel_source_files))
 
 .PHONY: build-x86_64
