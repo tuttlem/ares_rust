@@ -3,6 +3,7 @@
 mod cpu;
 mod interrupts;
 mod klog;
+mod timer;
 
 use core::ffi::c_void;
 use core::hint::spin_loop;
@@ -19,6 +20,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
 
     interrupts::init();
+    timer::init();
 
     let vendor_raw = cpu::vendor_string();
     let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
@@ -37,6 +39,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     if features.has_ecx(cpu::feature::ecx::AVX) {
         klog::writeln("[kmain] AVX supported");
     }
+
+    interrupts::enable();
 
     loop {
         spin_loop();

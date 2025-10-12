@@ -69,6 +69,12 @@ pub struct InterruptFrame {
     pub user_ss: u64,
 }
 
+pub mod vectors {
+    pub const PIT: u8 = 32;
+}
+
+const PIC_MASTER_OFFSET: u8 = 32;
+
 const IDT_ENTRIES: usize = 256;
 
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::missing(); IDT_ENTRIES];
@@ -150,6 +156,38 @@ pub fn register_handler(vector: u8, handler: InterruptHandler) {
     }
 }
 
+pub fn enable() {
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+}
+
+pub fn disable() {
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+}
+
+pub fn enable_irq(line: u8) {
+    unsafe { pic::unmask(line); }
+}
+
+pub fn disable_irq(line: u8) {
+    unsafe { pic::mask(line); }
+}
+
+pub fn enable_vector(vector: u8) {
+    if vector >= PIC_MASTER_OFFSET {
+        enable_irq(vector - PIC_MASTER_OFFSET);
+    }
+}
+
+pub fn disable_vector(vector: u8) {
+    if vector >= PIC_MASTER_OFFSET {
+        disable_irq(vector - PIC_MASTER_OFFSET);
+    }
+}
+
 fn default_handler(frame: &mut InterruptFrame) {
     klog!("[interrupts] Unhandled vector {} err=0x{:X}\n", frame.int_no, frame.err_code);
 }
@@ -218,6 +256,9 @@ mod pic {
     const ICW1_ICW4: u8 = 0x01;
     const ICW4_8086: u8 = 0x01;
 
+    static mut MASK_MASTER: u8 = 0xFF;
+    static mut MASK_SLAVE: u8 = 0xFF;
+
     pub(super) unsafe fn remap(offset1: u8, offset2: u8) {
         let mask1 = inb(PIC1_DATA);
         let mask2 = inb(PIC2_DATA);
@@ -234,8 +275,11 @@ mod pic {
         outb(PIC1_DATA, ICW4_8086);
         outb(PIC2_DATA, ICW4_8086);
 
-        outb(PIC1_DATA, mask1);
-        outb(PIC2_DATA, mask2);
+        MASK_MASTER = mask1;
+        MASK_SLAVE = mask2;
+
+        outb(PIC1_DATA, MASK_MASTER);
+        outb(PIC2_DATA, MASK_SLAVE);
 
         klog::writeln("[interrupts] PIC remapped");
     }
@@ -247,6 +291,31 @@ mod pic {
             }
 
             outb(PIC1_CMD, PIC_EOI);
+        }
+    }
+
+    pub(super) unsafe fn mask(irq: u8) {
+        if irq < 8 {
+            MASK_MASTER |= 1 << irq;
+            outb(PIC1_DATA, MASK_MASTER);
+        } else {
+            let line = irq - 8;
+            MASK_SLAVE |= 1 << line;
+            outb(PIC2_DATA, MASK_SLAVE);
+        }
+    }
+
+    pub(super) unsafe fn unmask(irq: u8) {
+        if irq < 8 {
+            MASK_MASTER &= !(1 << irq);
+            outb(PIC1_DATA, MASK_MASTER);
+        } else {
+            let line = irq - 8;
+            MASK_SLAVE &= !(1 << line);
+            outb(PIC2_DATA, MASK_SLAVE);
+            // Ensure cascade line enabled on the master when using the slave PIC
+            MASK_MASTER &= !(1 << 2);
+            outb(PIC1_DATA, MASK_MASTER);
         }
     }
 

@@ -20,8 +20,8 @@ boot_asm_object_files := $(patsubst $(boot_source_dir)/%.asm, $(boot_build_dir)/
 
 boot_object_files     := $(boot_asm_object_files)
 
-kernel_source_files   := $(shell find src/kernel -maxdepth 1 -name "*.rs" 2>/dev/null)
-kernel_object_files   := $(patsubst src/kernel/%.rs, build/kernel/%.o, $(kernel_source_files))
+kernel_source_files   := src/kernel/kmain.rs
+kernel_object_files   := build/kernel/kmain.o
 
 arch_kernel_source_dir        := src/arch/x86_64/kernel
 arch_kernel_build_dir         := build/arch/x86_64/kernel
