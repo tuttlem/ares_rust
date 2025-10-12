@@ -4,6 +4,13 @@ use core::mem::size_of;
 
 use crate::klog;
 
+#[cfg(target_arch = "x86_64")]
+#[path = "../../arch/x86_64/kernel/mmu.rs"]
+mod arch;
+
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!("Interrupt MMU helpers not implemented for this architecture");
+
 type InterruptHandler = fn(&mut InterruptFrame);
 
 #[repr(C, packed)]
@@ -71,6 +78,7 @@ pub struct InterruptFrame {
 
 pub mod vectors {
     pub const PIT: u8 = 32;
+    pub const PAGE_FAULT: u8 = 14;
 }
 
 const PIC_MASTER_OFFSET: u8 = 32;
@@ -192,6 +200,30 @@ fn default_handler(frame: &mut InterruptFrame) {
     klog!("[interrupts] Unhandled vector {} err=0x{:X}\n", frame.int_no, frame.err_code);
 }
 
+fn page_fault_handler(frame: &mut InterruptFrame) {
+    let fault_addr = unsafe { arch::read_cr2() };
+    let err = frame.err_code;
+
+    let present = (err & 1) != 0;
+    let write = (err & 2) != 0;
+    let user = (err & 4) != 0;
+    let reserved = (err & 8) != 0;
+    let instruction = (err & 16) != 0;
+
+    klog!(
+        "[page_fault] addr=0x{:016X} err=0x{:X} rip=0x{:016X} cs=0x{:X} present={} write={} user={} reserved={} instruction={}\n",
+        fault_addr,
+        err,
+        frame.rip,
+        frame.cs,
+        present,
+        write,
+        user,
+        reserved,
+        instruction
+    );
+}
+
 #[no_mangle]
 extern "C" fn isr_handler(frame: &mut InterruptFrame) {
     dispatch(frame);
@@ -226,6 +258,8 @@ unsafe fn setup_idt() {
     for (index, handler) in isr_handlers.iter().enumerate() {
         IDT[index].set_handler(*handler, GDT_KERNEL_CODE, IDT_TYPE_ATTR, 0);
     }
+
+    register_handler(vectors::PAGE_FAULT, page_fault_handler);
 
     for (i, handler) in irq_handlers.iter().enumerate() {
         let index = 32 + i;
