@@ -5,6 +5,9 @@ use crate::sync::spinlock::SpinLock;
 
 const MAX_REGIONS: usize = 128;
 const PAGE_SIZE: u64 = 4096;
+const RESERVED_END: u64 = 0x0010_0000; // keep first 1 MiB reserved
+
+pub const FRAME_SIZE: u64 = PAGE_SIZE;
 
 #[derive(Copy, Clone, Debug)]
 pub struct MemoryRegion {
@@ -29,6 +32,76 @@ impl MemoryRegion {
 struct MemoryMap {
     regions: [MemoryRegion; MAX_REGIONS],
     count: usize,
+}
+struct FrameAllocator {
+    current: u64,
+    end: u64,
+    region_index: usize,
+}
+impl FrameAllocator {
+    const fn new() -> Self {
+        Self {
+            current: 0,
+            end: 0,
+            region_index: 0,
+        }
+    }
+
+    fn init_from_map(&mut self, map: &MemoryMap) {
+        self.region_index = 0;
+        self.current = 0;
+        self.end = 0;
+        self.advance_to_next_region(map);
+    }
+
+    fn allocate(&mut self, map: &MemoryMap) -> Option<u64> {
+        loop {
+            if self.current >= self.end {
+                self.advance_to_next_region(map);
+                if self.current >= self.end {
+                    return None;
+                }
+            }
+
+            let frame = self.current;
+            self.current = self.current.saturating_add(PAGE_SIZE);
+
+            if frame == 0 {
+                continue;
+            }
+
+            return Some(frame);
+        }
+    }
+
+    fn free(&mut self, _frame: u64) {
+        // no-op for bump allocator
+    }
+
+    fn advance_to_next_region(&mut self, map: &MemoryMap) {
+        while self.region_index < map.count {
+            let region = map.regions[self.region_index];
+            self.region_index += 1;
+            if region.length == 0 {
+                continue;
+            }
+            let end = region.end();
+            if end <= RESERVED_END {
+                continue;
+            }
+
+            let start_base = region.base.max(RESERVED_END);
+            let start = align_up_u64(start_base, PAGE_SIZE);
+
+            if start < end {
+                self.current = start;
+                self.end = end;
+                return;
+            }
+        }
+
+        self.current = self.end;
+    }
 }
 
 impl MemoryMap {
@@ -58,6 +131,7 @@ impl MemoryMap {
 }
 
 static PHYS_MEMORY_MAP: SpinLock<MemoryMap> = SpinLock::new(MemoryMap::new());
+static FRAME_ALLOCATOR: SpinLock<FrameAllocator> = SpinLock::new(FrameAllocator::new());
 
 #[repr(C)]
 struct TagHeader {
@@ -134,6 +208,18 @@ pub fn summary() -> MemorySummary {
     }
 }
 
+pub fn allocate_frame() -> Option<u64> {
+    let map_guard = PHYS_MEMORY_MAP.lock();
+    let mut allocator = FRAME_ALLOCATOR.lock();
+    let frame = allocator.allocate(&map_guard);
+    frame
+}
+
+pub fn free_frame(frame: u64) {
+    let mut allocator = FRAME_ALLOCATOR.lock();
+    allocator.free(frame);
+}
+
 unsafe fn parse(multiboot_info_addr: usize) {
     let total_size = *(multiboot_info_addr as *const u32) as usize;
     let mut current = multiboot_info_addr + core::mem::size_of::<u32>() * 2;
@@ -154,6 +240,8 @@ unsafe fn parse(multiboot_info_addr: usize) {
 
         current = align_up(current + header.size as usize, 8);
     }
+
+    FRAME_ALLOCATOR.lock().init_from_map(&map);
 }
 
 unsafe fn parse_memory_map_tag(ptr: *const MemoryMapTagHeader, map: &mut MemoryMap) {
@@ -176,6 +264,11 @@ unsafe fn parse_memory_map_tag(ptr: *const MemoryMapTagHeader, map: &mut MemoryM
 }
 
 fn align_up(value: usize, align: usize) -> usize {
+    let mask = align - 1;
+    (value + mask) & !mask
+}
+
+fn align_up_u64(value: u64, align: u64) -> u64 {
     let mask = align - 1;
     (value + mask) & !mask
 }

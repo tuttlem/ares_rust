@@ -44,25 +44,6 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         klog::writeln("[kmain] AVX supported");
     }
 
-    unsafe {
-        use core::alloc::Layout;
-        let layout = Layout::array::<u32>(16).unwrap();
-        let ptr = crate::mem::heap::allocate(layout) as *mut u32;
-        if ptr.is_null() {
-            klog::writeln("[heap] allocation failed");
-        } else {
-            for i in 0..16 {
-                ptr.add(i).write(i as u32);
-            }
-            klog!(
-                "[heap] allocated array addr=0x{:016X} first={} last={}\n",
-                ptr as u64,
-                ptr.read(),
-                ptr.add(15).read()
-            );
-        }
-    }
-
     interrupts::enable();
 
     loop {
