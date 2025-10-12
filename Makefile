@@ -5,11 +5,12 @@ AFLAGS	:= -felf64
 LD	    := x86_64-elf-ld
 LFLAGS	:= -nostdlib -z nodefaultlib -z max-page-size=0x1000
 RUSTC   := rustc
-RUST_TARGET := x86_64-unknown-none
-RUSTFLAGS   := -C relocation-model=static -C code-model=kernel -C panic=abort
-RUST_SYSROOT := $(shell $(RUSTC) --print sysroot)
-RUST_LIBDIR  := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
-RUST_RLIBS   := $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
+
+RUST_TARGET 	:= x86_64-unknown-none
+RUSTFLAGS   	:= -C relocation-model=static -C code-model=kernel -C panic=abort
+RUST_SYSROOT 	:= $(shell $(RUSTC) --print sysroot)
+RUST_LIBDIR  	:= $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
+RUST_RLIBS   	:= $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib)
 
 boot_source_dir       := src/arch/x86_64/boot
