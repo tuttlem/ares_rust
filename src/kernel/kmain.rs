@@ -42,7 +42,6 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     interrupts::enable();
 
-    unsafe { core::ptr::write_volatile(0xDEADBEE0 as *mut u64, 0xABCD1234ABCD1234); }
     loop {
         spin_loop();
     }
