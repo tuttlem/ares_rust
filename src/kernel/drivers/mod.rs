@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 use crate::klog;
-use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
+
+const MAX_DRIVERS: usize = 32;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DriverKind {
@@ -12,7 +13,7 @@ pub enum DriverKind {
 
 #[derive(Debug)]
 pub enum DriverError {
-    AllocationFailed,
+    RegistryFull,
     InitFailed,
     Unsupported,
     IoError,
@@ -64,13 +65,6 @@ impl DriverSlot {
         }
     }
 
-    fn as_block(&self) -> Option<&'static dyn BlockDevice> {
-        match self {
-            DriverSlot::Block(dev) => Some(*dev),
-            _ => None,
-        }
-    }
-
     fn as_char(&self) -> Option<&'static dyn CharDevice> {
         match self {
             DriverSlot::Char(dev) => Some(*dev),
@@ -79,21 +73,14 @@ impl DriverSlot {
     }
 }
 
-struct DriverNode {
-    slot: DriverSlot,
-    next: Option<&'static DriverNode>,
-}
-
 struct DriverRegistry {
-    head: Option<&'static DriverNode>,
-    count: usize,
+    slots: [DriverSlot; MAX_DRIVERS],
 }
 
 impl DriverRegistry {
     const fn new() -> Self {
         Self {
-            head: None,
-            count: 0,
+            slots: [DriverSlot::empty(); MAX_DRIVERS],
         }
     }
 
@@ -106,26 +93,17 @@ impl DriverRegistry {
     }
 
     fn insert(&mut self, slot: DriverSlot) -> Result<(), DriverError> {
-        let layout = core::alloc::Layout::new::<DriverNode>();
-        let ptr = unsafe { heap::allocate(layout) as *mut DriverNode };
-        if ptr.is_null() {
-            return Err(DriverError::AllocationFailed);
+        for entry in self.slots.iter_mut() {
+            if matches!(entry, DriverSlot::Empty) {
+                *entry = slot;
+                return Ok(());
+            }
         }
-
-        unsafe {
-            ptr.write(DriverNode {
-                slot,
-                next: self.head,
-            });
-            self.head = Some(&*ptr);
-            self.count += 1;
-        }
-
-        Ok(())
+        Err(DriverError::RegistryFull)
     }
 
-    fn iter(&self) -> DriverIter {
-        DriverIter { current: self.head }
+    fn iter(&self) -> impl Iterator<Item = &DriverSlot> {
+        self.slots.iter().filter(|slot| !matches!(slot, DriverSlot::Empty))
     }
 }
 
@@ -199,21 +177,4 @@ pub fn self_test() {
             );
         }
     });
-}
-
-struct DriverIter {
-    current: Option<&'static DriverNode>,
-}
-
-impl Iterator for DriverIter {
-    type Item = &'static DriverSlot;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(node) = self.current {
-            self.current = node.next;
-            Some(&node.slot)
-        } else {
-            None
-        }
-    }
 }

@@ -8,10 +8,14 @@ mod sync;
 mod timer;
 mod cpu;
 
+use core::alloc::Layout;
 use core::ffi::c_void;
 use core::hint::spin_loop;
 use core::panic::PanicInfo;
+use core::ptr;
 use core::str;
+
+use crate::mem::heap::{self, HeapBox};
 
 #[no_mangle]
 pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> ! {
@@ -19,27 +23,63 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     klog::init();
     klog::writeln("[kmain] Booting Ares kernel");
-    klog!("[kmain] multiboot magic: 0x{:08X}\n", multiboot_magic);
-    klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
+    klog!("[kmain] multiboot magic: 0x{:08X}
+", multiboot_magic);
+    klog!("[kmain] multiboot info ptr: 0x{:016X}
+", info_addr);
 
     interrupts::init();
     mem::phys::init(info_addr);
-    mem::heap::init();
+    heap::init();
     drivers::init();
     drivers::register_builtin();
     drivers::list_drivers();
     drivers::self_test();
+
+    let before = heap::remaining_bytes();
+    {
+        let mut boxed = HeapBox::new([0u64; 8]).expect("heap alloc");
+        for (i, slot) in boxed.iter_mut().enumerate() {
+            *slot = i as u64;
+        }
+        let sum: u64 = boxed.iter().copied().sum();
+        klog!("[heap] array sum={} first={} last={}
+", sum, boxed[0], boxed[7]);
+    }
+    let after = heap::remaining_bytes();
+    klog!("[heap] remaining before={} after={}
+", before, after);
+
+    unsafe {
+        let layout = Layout::from_size_align(64, 16).unwrap();
+        let ptr = heap::allocate(layout);
+        if !ptr.is_null() {
+            ptr::write_bytes(ptr, 0xA5, 64);
+            heap::deallocate(ptr, layout);
+            klog!("[heap] manual alloc/free ok
+");
+        } else {
+            klog!("[heap] manual allocation failed
+");
+        }
+    }
+
     timer::init();
 
     let vendor_raw = cpu::vendor_string();
     let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
-    klog!("[kmain] CPU vendor: {vendor}\n");
-    klog!("[kmain] CPUID max basic leaf: 0x{:08X}\n", cpu::highest_basic_leaf());
-    klog!("[kmain] CPUID max extended leaf: 0x{:08X}\n", cpu::highest_extended_leaf());
+    klog!("[kmain] CPU vendor: {vendor}
+");
+    klog!("[kmain] CPUID max basic leaf: 0x{:08X}
+", cpu::highest_basic_leaf());
+    klog!("[kmain] CPUID max extended leaf: 0x{:08X}
+", cpu::highest_extended_leaf());
 
     let features = cpu::features();
-    klog!("[kmain] CPUID feature ECX: 0x{:08X}\n", features.ecx);
-    klog!("[kmain] CPUID feature EDX: 0x{:08X}\n", features.edx);
+    klog!("[kmain] CPUID feature ECX: 0x{:08X}
+", features.ecx);
+    klog!("[kmain] CPUID feature EDX: 0x{:08X}
+", features.edx);
 
     if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
         klog::writeln("[kmain] SSE/SSE2 supported");
@@ -59,7 +99,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     klog::writeln("[kpanic] Kernel panic!");
-    klog!("[kpanic] {}\n", info);
+    klog!("[kpanic] {}
+", info);
 
     loop {
         spin_loop();

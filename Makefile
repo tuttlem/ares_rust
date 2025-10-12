@@ -11,6 +11,7 @@ RUSTFLAGS   	:= -C relocation-model=static -C code-model=kernel -C panic=abort
 RUST_SYSROOT 	:= $(shell $(RUSTC) --print sysroot)
 RUST_LIBDIR  	:= $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
 RUST_RLIBS   	:= $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
+                 $(wildcard $(RUST_LIBDIR)/liballoc-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib)
 
 boot_source_dir       := src/arch/x86_64/boot
