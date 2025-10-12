@@ -12,8 +12,10 @@ RUST_LIBDIR  := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
 RUST_RLIBS   := $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib)
 
-boot_source_files     := $(shell find src/boot -name "*.asm")
-boot_asm_object_files := $(patsubst src/boot/%.asm, build/boot/%.o, $(boot_source_files))
+boot_source_dir       := src/arch/x86_64/boot
+boot_build_dir        := build/x86_64/boot
+boot_source_files     := $(shell find $(boot_source_dir) -name "*.asm")
+boot_asm_object_files := $(patsubst $(boot_source_dir)/%.asm, $(boot_build_dir)/%.o, $(boot_source_files))
 
 boot_object_files     := $(boot_asm_object_files)
 
@@ -24,9 +26,9 @@ kernel_object_files   := $(patsubst src/kernel/%.rs, build/kernel/%.o, $(kernel_
 
 all: build-x86_64
 
-$(boot_asm_object_files): build/boot/%.o : src/boot/%.asm
+$(boot_asm_object_files): $(boot_build_dir)/%.o : $(boot_source_dir)/%.asm
 	mkdir -p $(dir $@) && \
-	$(AS) $(AFLAGS) $(patsubst build/boot/%.o, src/boot/%.asm, $@) -o $@
+	$(AS) $(AFLAGS) $(patsubst $(boot_build_dir)/%.o, $(boot_source_dir)/%.asm, $@) -o $@
 
 $(kernel_object_files): build/kernel/%.o : src/kernel/%.rs
 	mkdir -p $(dir $@) && \
