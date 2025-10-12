@@ -94,3 +94,14 @@ fn new_line(state: &mut ConsoleState) {
 pub fn driver() -> &'static dyn CharDevice {
     Console::instance()
 }
+
+pub fn write_bytes(buf: &[u8]) -> Result<usize, DriverError> {
+    driver().write(buf)
+}
+
+pub fn clear() {
+    let mut state = STATE.lock();
+    arch::clear_screen();
+    state.row = 0;
+    state.col = 0;
+}

@@ -23,7 +23,6 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     let info_addr = multiboot_info as usize;
 
     klog::init();
-    klog::writeln("[kmain] Booting Ares kernel");
     klog!("[kmain] multiboot magic: 0x{:08X}
 ", multiboot_magic);
     klog!("[kmain] multiboot info ptr: 0x{:016X}
@@ -37,6 +36,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     drivers::list_drivers();
     drivers::self_test();
     syscall::init();
+    let banner = b"[ares] Booting Ares kernel\n";
+    let _ = syscall::write_console(banner);
 
     let before = heap::remaining_bytes();
     {
