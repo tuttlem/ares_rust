@@ -4,6 +4,7 @@ mod interrupts;
 mod klog;
 mod drivers;
 mod mem;
+mod syscall;
 mod sync;
 mod timer;
 mod cpu;
@@ -35,6 +36,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     drivers::register_builtin();
     drivers::list_drivers();
     drivers::self_test();
+    syscall::init();
 
     let before = heap::remaining_bytes();
     {

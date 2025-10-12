@@ -3,6 +3,8 @@
 use crate::klog;
 use crate::sync::spinlock::SpinLock;
 
+mod console;
+
 const MAX_DRIVERS: usize = 32;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]

@@ -261,6 +261,7 @@ impl<T> Drop for HeapBox<T> {
     fn drop(&mut self) {
         unsafe {
             ptr::drop_in_place(self.ptr.as_ptr());
-            deallocate(self.ptr.as_ptr() as *mut u8, self.layout);        }
+            deallocate(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
     }
 }
