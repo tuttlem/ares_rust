@@ -1,11 +1,11 @@
 #![no_std]
 
-mod cpu;
 mod interrupts;
 mod klog;
 mod mem;
 mod sync;
 mod timer;
+mod cpu;
 
 use core::ffi::c_void;
 use core::hint::spin_loop;
@@ -22,6 +22,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
 
     interrupts::init();
+    mem::phys::init(info_addr);
     mem::heap::init();
     timer::init();
 
