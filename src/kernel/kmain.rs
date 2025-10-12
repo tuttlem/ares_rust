@@ -23,11 +23,12 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
 
     interrupts::init();
+    mem::phys::init(info_addr);
+    mem::heap::init();
     drivers::init();
     drivers::register_builtin();
-    mem::phys::init(info_addr);
+    drivers::list_drivers();
     drivers::self_test();
-    mem::heap::init();
     timer::init();
 
     let vendor_raw = cpu::vendor_string();

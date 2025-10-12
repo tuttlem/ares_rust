@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 
 use crate::klog;
+use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
-
-const MAX_DRIVERS: usize = 32;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DriverKind {
@@ -13,7 +12,7 @@ pub enum DriverKind {
 
 #[derive(Debug)]
 pub enum DriverError {
-    RegistryFull,
+    AllocationFailed,
     InitFailed,
     Unsupported,
     IoError,
@@ -80,14 +79,21 @@ impl DriverSlot {
     }
 }
 
+struct DriverNode {
+    slot: DriverSlot,
+    next: Option<&'static DriverNode>,
+}
+
 struct DriverRegistry {
-    slots: [DriverSlot; MAX_DRIVERS],
+    head: Option<&'static DriverNode>,
+    count: usize,
 }
 
 impl DriverRegistry {
     const fn new() -> Self {
         Self {
-            slots: [DriverSlot::empty(); MAX_DRIVERS],
+            head: None,
+            count: 0,
         }
     }
 
@@ -100,18 +106,26 @@ impl DriverRegistry {
     }
 
     fn insert(&mut self, slot: DriverSlot) -> Result<(), DriverError> {
-        for entry in self.slots.iter_mut() {
-            if matches!(entry, DriverSlot::Empty) {
-                *entry = slot;
-                return Ok(());
-            }
+        let layout = core::alloc::Layout::new::<DriverNode>();
+        let ptr = unsafe { heap::allocate(layout) as *mut DriverNode };
+        if ptr.is_null() {
+            return Err(DriverError::AllocationFailed);
         }
 
-        Err(DriverError::RegistryFull)
+        unsafe {
+            ptr.write(DriverNode {
+                slot,
+                next: self.head,
+            });
+            self.head = Some(&*ptr);
+            self.count += 1;
+        }
+
+        Ok(())
     }
 
-    fn iter(&self) -> impl Iterator<Item = &DriverSlot> {
-        self.slots.iter().filter(|slot| !matches!(slot, DriverSlot::Empty))
+    fn iter(&self) -> DriverIter {
+        DriverIter { current: self.head }
     }
 }
 
@@ -120,7 +134,7 @@ static REGISTRY: SpinLock<DriverRegistry> = SpinLock::new(DriverRegistry::new())
 mod builtin;
 
 pub fn init() {
-    klog!("[driver] registry ready (capacity {})\n", MAX_DRIVERS);
+    klog!("[driver] registry ready\n");
 }
 
 pub fn register_block(device: &'static dyn BlockDevice) -> Result<(), DriverError> {
@@ -185,4 +199,21 @@ pub fn self_test() {
             );
         }
     });
+}
+
+struct DriverIter {
+    current: Option<&'static DriverNode>,
+}
+
+impl Iterator for DriverIter {
+    type Item = &'static DriverSlot;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.current {
+            self.current = node.next;
+            Some(&node.slot)
+        } else {
+            None
+        }
+    }
 }
