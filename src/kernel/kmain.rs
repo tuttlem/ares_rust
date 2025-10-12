@@ -1,6 +1,7 @@
 #![no_std]
 
 mod cpu;
+mod interrupts;
 mod klog;
 
 use core::ffi::c_void;
@@ -16,6 +17,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     klog::writeln("[kmain] Booting Ares kernel");
     klog!("[kmain] multiboot magic: 0x{:08X}\n", multiboot_magic);
     klog!("[kmain] multiboot info ptr: 0x{:016X}\n", info_addr);
+
+    interrupts::init();
 
     let vendor_raw = cpu::vendor_string();
     let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");

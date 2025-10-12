@@ -23,6 +23,13 @@ boot_object_files     := $(boot_asm_object_files)
 kernel_source_files   := $(shell find src/kernel -maxdepth 1 -name "*.rs" 2>/dev/null)
 kernel_object_files   := $(patsubst src/kernel/%.rs, build/kernel/%.o, $(kernel_source_files))
 
+arch_kernel_source_dir        := src/arch/x86_64/kernel
+arch_kernel_build_dir         := build/arch/x86_64/kernel
+arch_kernel_asm_source_files  := $(shell find $(arch_kernel_source_dir) -name "*.asm" 2>/dev/null)
+arch_kernel_asm_object_files  := $(patsubst $(arch_kernel_source_dir)/%.asm, $(arch_kernel_build_dir)/%.o, $(arch_kernel_asm_source_files))
+
+arch_kernel_object_files      := $(arch_kernel_asm_object_files)
+
 .PHONY: build-x86_64
 
 all: build-x86_64
@@ -35,9 +42,13 @@ $(kernel_object_files): build/kernel/%.o : src/kernel/%.rs
 	mkdir -p $(dir $@) && \
 	$(RUSTC) $(RUSTFLAGS) --target $(RUST_TARGET) --emit=obj -o $@ --crate-type=lib $<
 
-build-x86_64: $(boot_object_files) $(kernel_object_files)
+$(arch_kernel_asm_object_files): $(arch_kernel_build_dir)/%.o : $(arch_kernel_source_dir)/%.asm
+	mkdir -p $(dir $@) && \
+	$(AS) $(AFLAGS) $(patsubst $(arch_kernel_build_dir)/%.o, $(arch_kernel_source_dir)/%.asm, $@) -o $@
+
+build-x86_64: $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files)
 	mkdir -p dist/x86_64 && \
-	$(LD) $(LFLAGS) -o dist/x86_64/kernel.bin -T targets/x86_64/linker.ld $(boot_object_files) $(kernel_object_files) $(x86_64_object_files) $(RUST_RLIBS) && \
+	$(LD) $(LFLAGS) -o dist/x86_64/kernel.bin -T targets/x86_64/linker.ld $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files) $(x86_64_object_files) $(RUST_RLIBS) && \
 	cp dist/x86_64/kernel.bin targets/x86_64/iso/boot/kernel.bin && \
 	grub-mkrescue /usr/lib/grub/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso
 
