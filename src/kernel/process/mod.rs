@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::drivers::console;
+use crate::drivers::keyboard;
 use crate::drivers::{CharDevice, DriverError};
 use crate::klog;
 use crate::mem::heap;
@@ -32,6 +33,12 @@ impl FileDescriptor {
     pub fn write(&self, buf: &[u8]) -> Result<usize, DriverError> {
         match self {
             FileDescriptor::Char(device) => device.write(buf),
+        }
+    }
+
+    pub fn read(&self, buf: &mut [u8]) -> Result<usize, DriverError> {
+        match self {
+            FileDescriptor::Char(device) => device.read(buf),
         }
     }
 }
@@ -146,6 +153,9 @@ impl ProcessTable {
         let console_device = console::driver();
         process.set_fd(STDOUT_FD, FileDescriptor::Char(console_device))?;
         process.set_fd(STDERR_FD, FileDescriptor::Char(console_device))?;
+
+        let keyboard_device = keyboard::driver();
+        process.set_fd(STDIN_FD, FileDescriptor::Char(keyboard_device))?;
 
         self.push(process)?;
         Ok(pid)

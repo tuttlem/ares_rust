@@ -68,9 +68,35 @@ fn dispatch(frame: &mut SyscallFrame) -> u64 {
     }
 }
 
-fn sys_read(_fd: u64, _buf_ptr: u64, _len: u64) -> u64 {
-    // Input path not wired yet.
-    ERR_NOSYS
+fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+
+    if buf_ptr == 0 {
+        return ERR_FAULT;
+    }
+
+    let len = len as usize;
+    let buffer = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    let current_pid = match process::current_pid() {
+        Some(pid) => pid,
+        None => {
+            klog!("[syscall] read with no current process pid fd={} len={}\n", fd, len);
+            return ERR_BADF;
+        }
+    };
+
+    let descriptor = match process::descriptor(current_pid, fd as usize) {
+        Some(desc) => desc,
+        None => {
+            klog!("[syscall] pid {} missing fd {}\n", current_pid, fd);
+            return ERR_BADF;
+        }
+    };
+
+    read_via_descriptor(descriptor, buffer)
 }
 
 fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
@@ -106,6 +132,13 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
 
 fn write_via_descriptor(descriptor: FileDescriptor, slice: &[u8]) -> u64 {
     match descriptor.write(slice) {
+        Ok(count) => count as u64,
+        Err(_) => ERR_BADF,
+    }
+}
+
+fn read_via_descriptor(descriptor: FileDescriptor, buf: &mut [u8]) -> u64 {
+    match descriptor.read(buf) {
         Ok(count) => count as u64,
         Err(_) => ERR_BADF,
     }

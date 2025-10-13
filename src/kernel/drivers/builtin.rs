@@ -2,6 +2,7 @@ use crate::klog;
 use super::{register_char, CharDevice, Driver, DriverError, DriverKind};
 
 use super::console;
+use super::keyboard;
 struct NullDevice;
 struct ZeroDevice;
 
@@ -62,6 +63,9 @@ impl CharDevice for ZeroDevice {
 pub fn register() {
     if let Err(err) = register_char(console::driver()) {
         klog!("[driver] failed to register console: {:?}\n", err);
+    }
+    if let Err(err) = register_char(keyboard::driver()) {
+        klog!("[driver] failed to register keyboard: {:?}\n", err);
     }
     if let Err(err) = register_char(&NULL_DRIVER) {
         klog!("[driver] failed to register null device: {:?}\n", err);

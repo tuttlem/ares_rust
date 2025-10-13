@@ -72,6 +72,7 @@ pub struct InterruptFrame {
 
 pub mod vectors {
     pub const PIT: u8 = 32;
+    pub const KEYBOARD: u8 = 33;
     pub const PAGE_FAULT: u8 = 14;
 }
 

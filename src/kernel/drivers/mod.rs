@@ -8,6 +8,7 @@ use core::alloc::Layout;
 use core::{ptr, slice};
 
 pub mod console;
+pub mod keyboard;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DriverKind {

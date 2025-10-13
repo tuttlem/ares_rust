@@ -100,7 +100,13 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     interrupts::enable();
 
+    let mut input_buf = [0u8; 64];
     loop {
+        let count = syscall::read(syscall::fd::STDIN, &mut input_buf);
+        if count > 0 && count <= input_buf.len() as u64 {
+            let slice = &input_buf[..count as usize];
+            let _ = syscall::write(syscall::fd::STDOUT, slice);
+        }
         spin_loop();
     }
 }
