@@ -99,6 +99,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
     process::spawn_kernel_process("ticker", ticker_task).expect("spawn ticker");
+    process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
 
     interrupts::enable();
 
@@ -127,6 +128,20 @@ extern "C" fn ticker_task() -> ! {
         counter = counter.wrapping_add(1);
         if counter % 1_000 == 0 {
             let _ = syscall::write(syscall::fd::STDOUT, b"[ticker] heartbeat\n");
+        }
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+        process::yield_now();
+    }
+}
+
+extern "C" fn dump_all() -> ! {
+    let mut counter: u64 = 0;
+    loop {
+        counter = counter.wrapping_add(1);
+        if counter % 5_500 == 0 {
+            process::dump_all_processes();
         }
         for _ in 0..10_000 {
             core::hint::spin_loop();

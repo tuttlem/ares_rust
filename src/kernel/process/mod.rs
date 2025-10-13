@@ -506,3 +506,70 @@ where
         .ok_or(ProcessError::ProcessNotFound)?;
     Ok(f(process))
 }
+
+fn state_name(state: ProcessState) -> &'static str {
+    match state {
+        ProcessState::Ready => "Ready",
+        ProcessState::Running => "Running",
+        ProcessState::Blocked => "Blocked",
+        ProcessState::Zombie => "Zombie",
+    }
+}
+
+pub fn dump_process(pid: Pid) -> Result<(), ProcessError> {
+    let table = PROCESS_TABLE.lock();
+    let process = table.get(pid).ok_or(ProcessError::ProcessNotFound)?;
+    dump_process_inner(process);
+    Ok(())
+}
+
+pub fn dump_current_process() -> Result<(), ProcessError> {
+    if let Some(pid) = current_pid() {
+        dump_process(pid)
+    } else {
+        Err(ProcessError::ProcessNotFound)
+    }
+}
+
+pub fn dump_all_processes() {
+    let table = PROCESS_TABLE.lock();
+    let slice = table.slice();
+    for process in slice {
+        dump_process_inner(process);
+    }
+}
+
+fn dump_process_inner(process: &Process) {
+    klog!("[process] dump pid={} name='{}' state={} parent={:?}\n",
+        process.pid,
+        process.name,
+        state_name(process.state),
+        process.parent);
+
+    klog!(
+        "           stack_base=0x{:016X} rip=0x{:016X} rsp=0x{:016X} rbp=0x{:016X}\n",
+        process.stack_ptr as usize,
+        process.context.rip,
+        process.context.rsp,
+        process.context.rbp
+    );
+    klog!(
+        "           r15=0x{:016X} r14=0x{:016X} r13=0x{:016X} r12=0x{:016X} rbx=0x{:016X}\n",
+        process.context.r15,
+        process.context.r14,
+        process.context.r13,
+        process.context.r12,
+        process.context.rbx
+    );
+    klog!("           rflags=0x{:016X}\n", process.context.rflags);
+
+    for (fd, entry) in process.fds.iter().enumerate() {
+        if let Some(descriptor) = entry {
+            match descriptor {
+                FileDescriptor::Char(dev) => {
+                    klog!("           fd {:>2}: CharDevice '{}'\n", fd, dev.name());
+                }
+            }
+        }
+    }
+}
