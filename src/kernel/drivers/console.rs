@@ -39,9 +39,11 @@ impl Driver for Console {
 
     fn init(&self) -> Result<(), DriverError> {
         let mut state = STATE.lock();
+        arch::init();
         arch::clear_screen();
         state.row = 0;
         state.col = 0;
+        arch::set_cursor(state.row, state.col);
         Ok(())
     }
 }
@@ -79,6 +81,7 @@ fn put_char(state: &mut ConsoleState, byte: u8) {
 
     arch::write_at(state.row, state.col, byte, state.attr);
     state.col += 1;
+    arch::set_cursor(state.row, state.col);
 }
 
 fn new_line(state: &mut ConsoleState) {
@@ -88,6 +91,7 @@ fn new_line(state: &mut ConsoleState) {
         arch::scroll_up();
         state.row = arch::HEIGHT - 1;
     }
+    arch::set_cursor(state.row, state.col);
 }
 
 pub fn driver() -> &'static dyn CharDevice {
@@ -103,4 +107,5 @@ pub fn clear() {
     arch::clear_screen();
     state.row = 0;
     state.col = 0;
+    arch::set_cursor(state.row, state.col);
 }
