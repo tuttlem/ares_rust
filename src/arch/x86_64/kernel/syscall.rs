@@ -1,7 +1,8 @@
 #![cfg(target_arch = "x86_64")]
 
-use crate::drivers::console;
 use crate::klog;
+use crate::process;
+use crate::process::FileDescriptor;
 use core::slice;
 use super::msr;
 
@@ -84,12 +85,29 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
     let len = len as usize;
     let slice = unsafe { slice::from_raw_parts(buf_ptr as *const u8, len) };
 
-    match fd {
-        fd::STDOUT | fd::STDERR => match console::write_bytes(slice) {
-            Ok(count) => count as u64,
-            Err(_) => ERR_BADF,
-        },
-        _ => ERR_BADF,
+    let current_pid = match process::current_pid() {
+        Some(pid) => pid,
+        None => {
+            klog!("[syscall] write with no current process pid fd={} len={}\n", fd, len);
+            return ERR_BADF;
+        }
+    };
+
+    let descriptor = match process::descriptor(current_pid, fd as usize) {
+        Some(desc) => desc,
+        None => {
+            klog!("[syscall] pid {} missing fd {}\n", current_pid, fd);
+            return ERR_BADF;
+        }
+    };
+
+    write_via_descriptor(descriptor, slice)
+}
+
+fn write_via_descriptor(descriptor: FileDescriptor, slice: &[u8]) -> u64 {
+    match descriptor.write(slice) {
+        Ok(count) => count as u64,
+        Err(_) => ERR_BADF,
     }
 }
 

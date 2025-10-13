@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
 use crate::drivers::console;
-use crate::drivers::CharDevice;
+use crate::drivers::{CharDevice, DriverError};
 use crate::klog;
 use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
 
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::{ptr, slice};
 
 pub type Pid = u32;
@@ -25,6 +26,12 @@ impl FileDescriptor {
     pub fn as_char(&self) -> Option<&'static dyn CharDevice> {
         match self {
             FileDescriptor::Char(device) => Some(*device),
+        }
+    }
+
+    pub fn write(&self, buf: &[u8]) -> Result<usize, DriverError> {
+        match self {
+            FileDescriptor::Char(device) => device.write(buf),
         }
     }
 }
@@ -246,10 +253,12 @@ impl Drop for ProcessTable {
 }
 
 static PROCESS_TABLE: SpinLock<ProcessTable> = SpinLock::new(ProcessTable::new());
+static CURRENT_PID: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() -> Result<Pid, ProcessError> {
     let mut table = PROCESS_TABLE.lock();
     let pid = table.init_processes()?;
+    set_current_pid(pid);
     klog!("[process] created init process pid={}\n", pid);
     Ok(pid)
 }
@@ -298,6 +307,17 @@ pub fn init_pid() -> Option<Pid> {
     table.init_pid
 }
 
+pub fn current_pid() -> Option<Pid> {
+    match CURRENT_PID.load(Ordering::Acquire) {
+        0 => None,
+        pid => Some(pid as Pid),
+    }
+}
+
+pub fn set_current_pid(pid: Pid) {
+    CURRENT_PID.store(pid, Ordering::Release);
+}
+
 pub fn with_process_mut<F, R>(pid: Pid, f: F) -> Result<R, ProcessError>
 where
     F: FnOnce(&mut Process) -> R,
@@ -307,4 +327,9 @@ where
         .get_mut(pid)
         .ok_or(ProcessError::ProcessNotFound)?;
     Ok(f(process))
+}
+
+pub fn descriptor(pid: Pid, fd: usize) -> Option<FileDescriptor> {
+    let table = PROCESS_TABLE.lock();
+    table.get(pid).and_then(|process| process.fd(fd))
 }

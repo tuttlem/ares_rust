@@ -11,7 +11,7 @@ mod syscall;
 mod sync;
 mod timer;
 mod cpu;
-mod process;
+pub mod process;
 
 use core::alloc::Layout;
 use core::ffi::c_void;
