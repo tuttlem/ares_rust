@@ -19,6 +19,20 @@ const KERNEL_STACK_SIZE: usize = 16 * 1024;
 
 type ProcessEntry = extern "C" fn() -> !;
 
+#[derive(Clone, Copy, Debug)]
+pub enum MemoryRegionKind {
+    Stack,
+    Heap,
+    Other,
+}
+
+#[derive(Clone, Copy)]
+struct MemoryRegion {
+    base: *mut u8,
+    layout: Layout,
+    kind: MemoryRegionKind,
+}
+
 #[repr(C)]
 pub struct Context {
     pub r15: u64,
@@ -101,6 +115,7 @@ pub struct Process {
     context: Context,
     stack_ptr: *mut u8,
     stack_layout: Option<Layout>,
+    regions: MemoryRegionList,
 }
 
 impl Process {
@@ -133,6 +148,7 @@ impl Process {
             context,
             stack_ptr,
             stack_layout: Some(layout),
+            regions: MemoryRegionList::new(),
         };
 
         let console_device = console::driver();
@@ -141,6 +157,12 @@ impl Process {
 
         let keyboard_device = keyboard::driver();
         process.set_fd(STDIN_FD, FileDescriptor::Char(keyboard_device))?;
+
+        process.regions.register(MemoryRegion {
+            base: stack_ptr,
+            layout,
+            kind: MemoryRegionKind::Stack,
+        })?;
 
         Ok(process)
     }
@@ -175,13 +197,44 @@ impl Process {
         }
         self.fds[index]
     }
+
+    fn allocate_region(&mut self, layout: Layout, kind: MemoryRegionKind) -> Result<*mut u8, ProcessError> {
+        let ptr = unsafe { heap::allocate(layout) };
+        if ptr.is_null() {
+            return Err(ProcessError::AllocationFailed);
+        }
+        self.regions.register(MemoryRegion { base: ptr, layout, kind })?;
+        Ok(ptr)
+    }
+
+    fn release_region(&mut self, ptr: *mut u8) -> Result<(), ProcessError> {
+        if let Some(region) = self.regions.remove_by_ptr(ptr) {
+            if !region.base.is_null() {
+                unsafe {
+                    heap::deallocate(region.base, region.layout);
+                }
+            }
+            Ok(())
+        } else {
+            Err(ProcessError::MemoryRegionNotFound)
+        }
+    }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
-        if let Some(layout) = self.stack_layout.take() {
-            unsafe {
-                heap::deallocate(self.stack_ptr, layout);
+        for region in self.regions.drain() {
+            match region.kind {
+                MemoryRegionKind::Stack => {
+                    if let Some(layout) = self.stack_layout.take() {
+                        unsafe {
+                            heap::deallocate(self.stack_ptr, layout);
+                        }
+                    }
+                }
+                _ => unsafe {
+                    heap::deallocate(region.base, region.layout);
+                },
             }
         }
     }
@@ -195,6 +248,140 @@ pub enum ProcessError {
     ProcessNotFound,
     StackAllocationFailed,
     NotInitialized,
+    MemoryRegionNotFound,
+}
+
+struct MemoryRegionList {
+    regions: *mut MemoryRegion,
+    len: usize,
+    capacity: usize,
+}
+
+impl MemoryRegionList {
+    const fn new() -> Self {
+        Self {
+            regions: ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+        }
+    }
+
+    fn register(&mut self, region: MemoryRegion) -> Result<(), ProcessError> {
+        self.ensure_capacity(1)?;
+        unsafe {
+            self.regions.add(self.len).write(region);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    fn remove_by_ptr(&mut self, ptr: *mut u8) -> Option<MemoryRegion> {
+        for index in 0..self.len {
+            unsafe {
+                let entry_ptr = self.regions.add(index);
+                if (*entry_ptr).base == ptr {
+                    let removed = entry_ptr.read();
+                    if index != self.len - 1 {
+                        let last = self.regions.add(self.len - 1).read();
+                        self.regions.add(index).write(last);
+                    }
+                    self.len -= 1;
+                    return Some(removed);
+                }
+            }
+        }
+        None
+    }
+
+    fn iter(&self) -> core::slice::Iter<'_, MemoryRegion> {
+        self.as_slice().iter()
+    }
+
+    fn drain(&mut self) -> DrainMemoryRegions {
+        DrainMemoryRegions { list: self }
+    }
+
+    fn as_slice(&self) -> &[MemoryRegion] {
+        if self.len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(self.regions, self.len) }
+        }
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [MemoryRegion] {
+        if self.len == 0 {
+            &mut []
+        } else {
+            unsafe { slice::from_raw_parts_mut(self.regions, self.len) }
+        }
+    }
+
+    fn ensure_capacity(&mut self, additional: usize) -> Result<(), ProcessError> {
+        let required = self.len.checked_add(additional).ok_or(ProcessError::AllocationFailed)?;
+        if required <= self.capacity {
+            return Ok(());
+        }
+
+        let mut new_capacity = if self.capacity == 0 { 4 } else { self.capacity };
+        while new_capacity < required {
+            new_capacity = new_capacity.checked_mul(2).ok_or(ProcessError::AllocationFailed)?;
+        }
+
+        let layout = Layout::array::<MemoryRegion>(new_capacity).map_err(|_| ProcessError::AllocationFailed)?;
+        let new_ptr = unsafe { heap::allocate(layout) } as *mut MemoryRegion;
+        if new_ptr.is_null() {
+            return Err(ProcessError::AllocationFailed);
+        }
+
+        unsafe {
+            if self.len > 0 {
+                ptr::copy_nonoverlapping(self.regions, new_ptr, self.len);
+            }
+        }
+
+        if self.capacity != 0 {
+            let old_layout = Layout::array::<MemoryRegion>(self.capacity).map_err(|_| ProcessError::AllocationFailed)?;
+            unsafe {
+                heap::deallocate(self.regions as *mut u8, old_layout);
+            }
+        }
+
+        self.regions = new_ptr;
+        self.capacity = new_capacity;
+        Ok(())
+    }
+}
+
+impl Drop for MemoryRegionList {
+    fn drop(&mut self) {
+        if self.capacity != 0 && !self.regions.is_null() {
+            if let Ok(layout) = Layout::array::<MemoryRegion>(self.capacity) {
+                unsafe {
+                    heap::deallocate(self.regions as *mut u8, layout);
+                }
+            }
+        }
+        self.regions = ptr::null_mut();
+        self.len = 0;
+        self.capacity = 0;
+    }
+}
+
+struct DrainMemoryRegions<'a> {
+    list: &'a mut MemoryRegionList,
+}
+
+impl<'a> Iterator for DrainMemoryRegions<'a> {
+    type Item = MemoryRegion;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.list.len == 0 {
+            return None;
+        }
+        self.list.len -= 1;
+        unsafe { Some(self.list.regions.add(self.list.len).read()) }
+    }
 }
 
 struct ProcessTable {
@@ -283,11 +470,19 @@ impl ProcessTable {
     }
 
     fn slice(&self) -> &[Process] {
-        unsafe { slice::from_raw_parts(self.entries, self.len) }
+        if self.len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(self.entries, self.len) }
+        }
     }
 
     fn slice_mut(&mut self) -> &mut [Process] {
-        unsafe { slice::from_raw_parts_mut(self.entries, self.len) }
+        if self.len == 0 {
+            &mut []
+        } else {
+            unsafe { slice::from_raw_parts_mut(self.entries, self.len) }
+        }
     }
 
     fn find_index_by_pid(&self, pid: Pid) -> Option<usize> {
@@ -381,6 +576,18 @@ pub fn start_scheduler() -> ! {
 
 pub fn yield_now() {
     let _ = schedule_internal();
+}
+
+pub fn allocate_for_process(pid: Pid, layout: Layout, kind: MemoryRegionKind) -> Result<*mut u8, ProcessError> {
+    let mut table = PROCESS_TABLE.lock();
+    let process = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
+    process.allocate_region(layout, kind)
+}
+
+pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
+    let mut table = PROCESS_TABLE.lock();
+    let process = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
+    process.release_region(ptr)
 }
 
 fn schedule_internal() -> bool {
@@ -571,5 +778,20 @@ fn dump_process_inner(process: &Process) {
                 }
             }
         }
+    }
+
+    for region in process.regions.iter() {
+        let kind = match region.kind {
+            MemoryRegionKind::Stack => "stack",
+            MemoryRegionKind::Heap => "heap",
+            MemoryRegionKind::Other => "other",
+        };
+        klog!(
+            "           region {:>6} base=0x{:016X} size={:>6} align={}\n",
+            kind,
+            region.base as usize,
+            region.layout.size(),
+            region.layout.align()
+        );
     }
 }
