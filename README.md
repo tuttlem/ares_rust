@@ -2,6 +2,75 @@
 
 64-bit Development Operating System
 
+## Status Overview
+
+Ares has grown into a small but usable 64-bit kernel written primarily in Rust with a handful of x86_64 assembly stubs. It currently provides:
+
+- A clear separation between platform-agnostic kernel code (`src/kernel`) and architecture-specific support (`src/arch/x86_64`).
+- Multiboot-based bootstrap, IDT and PIC initialisation, and a cooperative scheduler for kernel processes.
+- A dynamic driver subsystem with architecture-specific character drivers (console, serial, keyboard) registered at runtime.
+- A syscall layer exposing `read`/`write` that honours per-process file descriptor tables (STDIN/STDOUT/STDERR default to keyboard/console devices).
+- Buffered PS/2 keyboard input so user keystrokes are delivered via the syscall path and echoed to the console.
+- VGA console output with a software cursor overlay, plus serial logging through the same driver abstraction.
+- Per-process kernel stacks, region-aware heap allocations, and tooling to introspect process state for debugging.
+
+These pieces are already enough to boot into a cooperative multi-tasking kernel where multiple tasks interleave via explicit yields.
+
+## Architecture Overview
+
+```
+src/
+ ├── arch/
+ │   └── x86_64/
+ │       ├── boot/                # Multiboot entry and low-level assembly stubs
+ │       ├── drivers/             # VGA console, serial, PS/2 keyboard backends
+ │       ├── io/                  # Shared port I/O helpers (inb/outb)
+ │       └── kernel/              # Interrupts, PIT, syscall trampolines, context switch
+ └── kernel/
+     ├── drivers/                 # Driver registry and architecture-neutral facades
+     ├── process/                 # Process table, scheduler, descriptors, memory regions
+     ├── mem/                     # Kernel heap allocator and physical memory parsing
+     ├── syscall/                 # High-level syscall facade
+     ├── timer/, cpu/, sync/      # Supporting subsystems
+     └── kmain.rs                 # Kernel entry point
+```
+
+### Boot Flow
+
+1. Multiboot hands control to `kmain`, which sets up interrupts, physical memory tracking, and the kernel heap.
+2. Drivers are registered through a dynamic registry that sources architecture implementations (console, serial, keyboard).
+3. The syscall layer configures `syscall/sysret` MSRs and the init banner is written via the new syscall path.
+4. `process::init()` prepares the process table and allocates per-process stacks with tracked memory regions.
+5. Sample kernel processes (the keyboard echo shell and a ticker heartbeat) are spawned, after which the cooperative scheduler takes over.
+
+### Process Runtime & Scheduling
+
+- Each process owns a dedicated kernel stack (16 KiB), a saved `Context`, and a descriptor table for standard streams.
+- `process::spawn_kernel_process` seeds descriptors, registers stack regions, and schedules tasks through a round-robin dispatcher.
+- An assembly stub (`context_switch.asm`) saves callee-saved registers plus `rsp/rip/rflags` before jumping into the next task.
+- Diagnostics such as `process::dump_process`, `dump_current_process`, and `dump_all_processes` log registers, stack addresses, descriptors, and memory regions over serial.
+- Helper APIs (`allocate_for_process`, `free_for_process`) wrap heap allocations so regions are tracked per PID.
+
+### Syscalls & File Descriptors
+
+- Syscall numbers follow the Linux convention for `read`/`write`, with descriptors 0/1/2 mapped to keyboard, console, and console respectively.
+- The dispatcher validates the current PID, resolves the descriptor from the process table, and delegates to the underlying driver, returning sentinel errors for bad descriptors or missing processes.
+- Kernel tasks exercise the same ABI (e.g., the echo shell reads from STDIN and writes to STDOUT exclusively via syscalls).
+
+### Device Drivers & I/O
+
+- Character drivers live under `src/kernel/drivers` and adapt to architecture backends; the registry expands dynamically using the kernel heap.
+- The console driver manages VGA text memory, scrolling, and a non-blinking software cursor overlay.
+- The keyboard driver translates set-1 scancodes, maintains a ring buffer, and feeds interrupts into the syscall layer.
+- A shared `io` module centralises `inb`/`outb`, removing duplicated inline assembly across PIT, PIC, console, serial, and keyboard code.
+
+### Memory Management & Diagnostics
+
+- Physical memory is parsed from Multiboot tables and logged during boot.
+- A linked-list heap allocator backs kernel allocations; process stacks and additional regions are carved out from this heap.
+- Per-process region tracking lays the groundwork for future per-PID heaps or address-space isolation.
+- Serial logging (`klog!`) provides a unified way to emit diagnostics from anywhere in the kernel.
+
 ## Development
 
 Build environment is provided as a docker container. Create the docker image with the following:
@@ -23,4 +92,3 @@ Using qemu, you can you use the following:
 ```
 qemu-system-x86_64 -cdrom ./dist/x86_64/kernel.iso
 ```
-
