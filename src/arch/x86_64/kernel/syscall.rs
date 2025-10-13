@@ -5,6 +5,21 @@ use crate::klog;
 use core::slice;
 use super::msr;
 
+pub mod nr {
+    pub const READ: u64 = 0;
+    pub const WRITE: u64 = 1;
+}
+
+pub mod fd {
+    pub const STDIN: u64 = 0;
+    pub const STDOUT: u64 = 1;
+    pub const STDERR: u64 = 2;
+}
+
+const ERR_BADF: u64 = u64::MAX - 0;
+const ERR_FAULT: u64 = u64::MAX - 1;
+const ERR_NOSYS: u64 = u64::MAX - 2;
+
 extern "C" {
     fn syscall_entry();
 }
@@ -46,27 +61,53 @@ pub extern "C" fn syscall_trampoline(frame: *mut SyscallFrame) -> u64 {
 
 fn dispatch(frame: &mut SyscallFrame) -> u64 {
     match frame.rax {
-        0 => {
-            let ptr = frame.rdi as *const u8;
-            let len = frame.rsi as usize;
-            if ptr.is_null() {
-                return u64::MAX;
-            }
-            let slice = unsafe { slice::from_raw_parts(ptr, len) };
-            match console::write_bytes(slice) {
-                Ok(count) => count as u64,
-                Err(_) => u64::MAX,
-            }
-        }
-        _ => u64::MAX,
+        nr::READ => sys_read(frame.rdi, frame.rsi, frame.rdx),
+        nr::WRITE => sys_write(frame.rdi, frame.rsi, frame.rdx),
+        _ => ERR_NOSYS,
     }
 }
 
-pub fn write_console(bytes: &[u8]) -> u64 {
+fn sys_read(_fd: u64, _buf_ptr: u64, _len: u64) -> u64 {
+    // Input path not wired yet.
+    ERR_NOSYS
+}
+
+fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+
+    if buf_ptr == 0 {
+        return ERR_FAULT;
+    }
+
+    let len = len as usize;
+    let slice = unsafe { slice::from_raw_parts(buf_ptr as *const u8, len) };
+
+    match fd {
+        fd::STDOUT | fd::STDERR => match console::write_bytes(slice) {
+            Ok(count) => count as u64,
+            Err(_) => ERR_BADF,
+        },
+        _ => ERR_BADF,
+    }
+}
+
+pub fn write(fd: u64, bytes: &[u8]) -> u64 {
     let mut frame = SyscallFrame::empty();
-    frame.rax = 0;
-    frame.rdi = bytes.as_ptr() as u64;
-    frame.rsi = bytes.len() as u64;
+    frame.rax = nr::WRITE;
+    frame.rdi = fd;
+    frame.rsi = bytes.as_ptr() as u64;
+    frame.rdx = bytes.len() as u64;
+    dispatch(&mut frame)
+}
+
+pub fn read(fd: u64, buf: &mut [u8]) -> u64 {
+    let mut frame = SyscallFrame::empty();
+    frame.rax = nr::READ;
+    frame.rdi = fd;
+    frame.rsi = buf.as_mut_ptr() as u64;
+    frame.rdx = buf.len() as u64;
     dispatch(&mut frame)
 }
 
