@@ -11,6 +11,7 @@ mod syscall;
 mod sync;
 mod timer;
 mod cpu;
+mod process;
 
 use core::alloc::Layout;
 use core::ffi::c_void;
@@ -38,6 +39,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     drivers::register_builtin();
     drivers::list_drivers();
     drivers::self_test();
+    let init_pid = process::init().expect("process init");
+    klog!("[process] init pid={}\n", init_pid);
     syscall::init();
     let banner = b"[ares] Booting Ares kernel\n";
     let _ = syscall::write(syscall::fd::STDOUT, banner);
