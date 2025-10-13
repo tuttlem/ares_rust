@@ -1,3 +1,5 @@
+use crate::arch::x86_64::io::outb;
+
 const PIT_CLOCK_OSC: u32 = 1_193_182;
 
 pub(crate) fn init_frequency(hz: u32) {
@@ -19,9 +21,4 @@ pub(crate) fn init_frequency(hz: u32) {
         outb(0x40, low);
         outb(0x40, high);
     }
-}
-
-#[inline(always)]
-unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
 }

@@ -271,6 +271,7 @@ unsafe fn load_idt() {
 
 mod pic {
     use super::klog;
+    use crate::arch::x86_64::io::{inb, outb};
 
     const PIC1: u16 = 0x20;
     const PIC2: u16 = 0xA0;
@@ -348,15 +349,4 @@ mod pic {
         }
     }
 
-    #[inline(always)]
-    unsafe fn outb(port: u16, value: u8) {
-        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-    }
-
-    #[inline(always)]
-    unsafe fn inb(port: u16) -> u8 {
-        let value: u8;
-        core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-        value
-    }
 }

@@ -1,3 +1,4 @@
+use crate::arch::x86_64::io::{inb, outb};
 use crate::sync::spinlock::SpinLock;
 
 const VGA_BUFFER: *mut u16 = 0xB8000 as *mut u16;
@@ -138,16 +139,4 @@ fn reset_cursor_state() {
     cursor.position = 0;
     cursor.saved = ((DEFAULT_ATTR as u16) << 8) | b' ' as u16;
     cursor.block = cursor.saved;
-}
-
-#[inline(always)]
-unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-}
-
-#[inline(always)]
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-    value
 }

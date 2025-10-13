@@ -1,5 +1,7 @@
 use core::hint::spin_loop;
 
+use crate::arch::x86_64::io::{inb, outb};
+
 const COM1_PORT: u16 = 0x3F8;
 
 const DATA: u16 = COM1_PORT;
@@ -43,16 +45,4 @@ fn transmit(byte: u8) {
 
 fn is_transmit_empty() -> bool {
     unsafe { inb(LINE_STATUS) & 0x20 != 0 }
-}
-
-#[inline(always)]
-unsafe fn outb(port: u16, value: u8) {
-    core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-}
-
-#[inline(always)]
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-    value
 }

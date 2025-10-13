@@ -1,3 +1,4 @@
+use crate::arch::x86_64::io::inb;
 use crate::arch::x86_64::kernel::interrupts;
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
 use crate::klog;
@@ -198,11 +199,4 @@ fn map_symbol(scancode: u8, shift: bool) -> Option<u8> {
     } else {
         Some(byte)
     }
-}
-
-#[inline(always)]
-unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags));
-    value
 }
