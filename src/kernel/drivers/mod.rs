@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
 use crate::klog;
+use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
 
-pub mod console;
+use core::alloc::Layout;
+use core::{ptr, slice};
 
-const MAX_DRIVERS: usize = 32;
+pub mod console;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum DriverKind {
@@ -76,13 +78,19 @@ impl DriverSlot {
 }
 
 struct DriverRegistry {
-    slots: [DriverSlot; MAX_DRIVERS],
+    slots: *mut DriverSlot,
+    len: usize,
+    capacity: usize,
 }
+
+unsafe impl Send for DriverRegistry {}
 
 impl DriverRegistry {
     const fn new() -> Self {
         Self {
-            slots: [DriverSlot::empty(); MAX_DRIVERS],
+            slots: ptr::null_mut(),
+            len: 0,
+            capacity: 0,
         }
     }
 
@@ -95,17 +103,80 @@ impl DriverRegistry {
     }
 
     fn insert(&mut self, slot: DriverSlot) -> Result<(), DriverError> {
-        for entry in self.slots.iter_mut() {
-            if matches!(entry, DriverSlot::Empty) {
-                *entry = slot;
-                return Ok(());
+        self.ensure_capacity(1)?;
+        unsafe {
+            self.slots.add(self.len).write(slot);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    fn ensure_capacity(&mut self, additional: usize) -> Result<(), DriverError> {
+        let required = self.len.checked_add(additional).ok_or(DriverError::RegistryFull)?;
+        if required <= self.capacity {
+            return Ok(());
+        }
+
+        debug_assert!(self.slots.is_null() == (self.capacity == 0));
+
+        let mut new_capacity = if self.capacity == 0 { 4 } else { self.capacity };
+        while new_capacity < required {
+            new_capacity = new_capacity.saturating_mul(2);
+        }
+
+        let layout = Layout::array::<DriverSlot>(new_capacity).map_err(|_| DriverError::RegistryFull)?;
+        let new_ptr = unsafe { heap::allocate(layout) } as *mut DriverSlot;
+        if new_ptr.is_null() {
+            return Err(DriverError::RegistryFull);
+        }
+
+        unsafe {
+            if self.len > 0 {
+                ptr::copy_nonoverlapping(self.slots, new_ptr, self.len);
+            }
+
+            for index in self.len..new_capacity {
+                new_ptr.add(index).write(DriverSlot::empty());
             }
         }
-        Err(DriverError::RegistryFull)
+
+        if self.capacity != 0 {
+            let old_layout = Layout::array::<DriverSlot>(self.capacity).map_err(|_| DriverError::RegistryFull)?;
+            unsafe {
+                heap::deallocate(self.slots as *mut u8, old_layout);
+            }
+        }
+
+        self.slots = new_ptr;
+        self.capacity = new_capacity;
+        Ok(())
     }
 
     fn iter(&self) -> impl Iterator<Item = &DriverSlot> {
-        self.slots.iter().filter(|slot| !matches!(slot, DriverSlot::Empty))
+        let slice: &[DriverSlot] = if self.len == 0 {
+            &[]
+        } else {
+            unsafe { slice::from_raw_parts(self.slots, self.len) }
+        };
+        slice.iter()
+    }
+}
+
+impl Drop for DriverRegistry {
+    fn drop(&mut self) {
+        if self.capacity == 0 || self.slots.is_null() {
+            return;
+        }
+
+        if let Ok(layout) = Layout::array::<DriverSlot>(self.capacity) {
+            unsafe {
+                heap::deallocate(self.slots as *mut u8, layout);
+            }
+        }
+
+        self.slots = ptr::null_mut();
+        self.len = 0;
+        self.capacity = 0;
     }
 }
 
