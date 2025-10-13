@@ -39,8 +39,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     drivers::register_builtin();
     drivers::list_drivers();
     drivers::self_test();
-    let init_pid = process::init().expect("process init");
-    klog!("[process] init pid={}\n", init_pid);
+    process::init().expect("process init");
     syscall::init();
     let banner = b"[ares] Booting Ares kernel\n";
     let _ = syscall::write(syscall::fd::STDOUT, banner);
@@ -98,16 +97,41 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         klog::writeln("[kmain] AVX supported");
     }
 
+    process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
+    process::spawn_kernel_process("ticker", ticker_task).expect("spawn ticker");
+
     interrupts::enable();
 
+    process::start_scheduler();
+}
+
+extern "C" fn init_shell_task() -> ! {
     let mut input_buf = [0u8; 64];
     loop {
         let count = syscall::read(syscall::fd::STDIN, &mut input_buf);
-        if count > 0 && count <= input_buf.len() as u64 {
+        if count == 0 {
+            process::yield_now();
+            continue;
+        }
+        if count <= input_buf.len() as u64 {
             let slice = &input_buf[..count as usize];
             let _ = syscall::write(syscall::fd::STDOUT, slice);
         }
-        spin_loop();
+        process::yield_now();
+    }
+}
+
+extern "C" fn ticker_task() -> ! {
+    let mut counter: u64 = 0;
+    loop {
+        counter = counter.wrapping_add(1);
+        if counter % 1_000 == 0 {
+            let _ = syscall::write(syscall::fd::STDOUT, b"[ticker] heartbeat\n");
+        }
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+        process::yield_now();
     }
 }
 
