@@ -1,6 +1,5 @@
 #[cfg(target_arch = "x86_64")]
-#[path = "../../arch/x86_64/kernel/serial.rs"]
-mod serial;
+use crate::arch::x86_64::drivers::serial;
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("klog serial backend not implemented for this architecture");

@@ -2,8 +2,7 @@ use crate::drivers::{CharDevice, Driver, DriverError, DriverKind};
 use crate::sync::spinlock::SpinLock;
 
 #[cfg(target_arch = "x86_64")]
-#[path = "../../arch/x86_64/drivers/console.rs"]
-mod arch;
+use crate::arch::x86_64::drivers::console as arch;
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("Console driver is only implemented for x86_64");

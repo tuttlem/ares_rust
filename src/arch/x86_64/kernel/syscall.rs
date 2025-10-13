@@ -3,9 +3,7 @@
 use crate::drivers::console;
 use crate::klog;
 use core::slice;
-
-#[path = "../../arch/x86_64/kernel/msr.rs"]
-mod msr;
+use super::msr;
 
 extern "C" {
     fn syscall_entry();

@@ -1,5 +1,8 @@
 #![no_std]
 
+#[path = "../arch/mod.rs"]
+pub mod arch;
+
 mod interrupts;
 mod klog;
 mod drivers;
