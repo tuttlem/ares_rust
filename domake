@@ -1,3 +1,7 @@
 #!/bin/bash
 
-docker run --rm -ti --user 1000 -v $(pwd):/build ares_build make $@
+if [ -t 1 ]; then
+    docker run --rm -it --user 1000 -v "$(pwd)":/build ares_build make "$@"
+else
+    docker run --rm --user 1000 -v "$(pwd)":/build ares_build make "$@"
+fi

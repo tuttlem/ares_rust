@@ -2,6 +2,7 @@ use crate::arch::x86_64::io::inb;
 use crate::arch::x86_64::kernel::interrupts;
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
 use crate::klog;
+use crate::process::{self, WaitChannel};
 use crate::sync::spinlock::SpinLock;
 
 const DATA_PORT: u16 = 0x60;
@@ -91,13 +92,21 @@ fn keyboard_handler(_frame: &mut InterruptFrame) {
     let scancode = unsafe { inb(DATA_PORT) };
 
     let mut state = STATE.lock();
+    let mut pushed = false;
 
     if scancode & 0x80 != 0 {
         handle_key_release(&mut state, scancode & 0x7F);
     } else {
         if let Some(byte) = translate_scancode(&mut state, scancode) {
             state.push(byte);
+            pushed = true;
         }
+    }
+
+    drop(state);
+
+    if pushed {
+        process::wake_channel(WaitChannel::KeyboardInput);
     }
 }
 

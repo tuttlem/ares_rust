@@ -5,6 +5,9 @@ use crate::klog;
 use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
+
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{ptr, slice};
@@ -26,11 +29,49 @@ pub enum MemoryRegionKind {
     Other,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryPermissions {
+    read: bool,
+    write: bool,
+    execute: bool,
+}
+
+impl MemoryPermissions {
+    pub const fn new(read: bool, write: bool, execute: bool) -> Self {
+        Self { read, write, execute }
+    }
+
+    pub const fn read_write() -> Self {
+        Self::new(true, true, false)
+    }
+
+    pub const fn read_only() -> Self {
+        Self::new(true, false, false)
+    }
+
+    pub const fn read_execute() -> Self {
+        Self::new(true, false, true)
+    }
+
+    pub fn read(&self) -> bool {
+        self.read
+    }
+
+    pub fn write(&self) -> bool {
+        self.write
+    }
+
+    pub fn execute(&self) -> bool {
+        self.execute
+    }
+}
+
 #[derive(Clone, Copy)]
 struct MemoryRegion {
     base: *mut u8,
     layout: Layout,
     kind: MemoryRegionKind,
+    permissions: MemoryPermissions,
 }
 
 #[repr(C)]
@@ -64,10 +105,15 @@ impl Context {
 
 extern "C" {
     fn context_switch(current: *mut Context, next: *const Context);
+    fn preempt_trampoline();
 }
 
 extern "C" fn process_exit() -> ! {
     klog!("[process] process exited unexpectedly\n");
+    exit_current(-1)
+}
+
+extern "C" fn idle_task() -> ! {
     loop {
         unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
     }
@@ -106,11 +152,37 @@ pub enum ProcessState {
     Zombie,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitChannel {
+    KeyboardInput,
+    ChildAny,
+    Child(Pid),
+}
+
+impl WaitChannel {
+    fn matches_event(self, event: WaitChannel) -> bool {
+        match (self, event) {
+            (WaitChannel::KeyboardInput, WaitChannel::KeyboardInput) => true,
+            (WaitChannel::ChildAny, WaitChannel::Child(_)) => true,
+            (WaitChannel::Child(wait_pid), WaitChannel::Child(event_pid)) => wait_pid == event_pid,
+            _ => false,
+        }
+    }
+
+    fn is_child_event(self) -> bool {
+        matches!(self, WaitChannel::Child(_) | WaitChannel::ChildAny)
+    }
+}
+
 pub struct Process {
     pid: Pid,
     parent: Option<Pid>,
     name: &'static str,
     state: ProcessState,
+    wait_channel: Option<WaitChannel>,
+    exit_code: Option<i32>,
+    is_idle: bool,
+    preempt_return: Option<u64>,
     fds: [Option<FileDescriptor>; MAX_FDS],
     context: Context,
     stack_ptr: *mut u8,
@@ -119,7 +191,13 @@ pub struct Process {
 }
 
 impl Process {
-    fn new_kernel(pid: Pid, name: &'static str, parent: Option<Pid>, entry: ProcessEntry) -> Result<Self, ProcessError> {
+    fn new_kernel(
+        pid: Pid,
+        name: &'static str,
+        parent: Option<Pid>,
+        entry: ProcessEntry,
+        is_idle: bool,
+    ) -> Result<Self, ProcessError> {
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| ProcessError::StackAllocationFailed)?;
         let stack_ptr = unsafe { heap::allocate(layout) };
         if stack_ptr.is_null() {
@@ -144,6 +222,10 @@ impl Process {
             parent,
             name,
             state: ProcessState::Ready,
+            wait_channel: None,
+            exit_code: None,
+            is_idle,
+            preempt_return: None,
             fds: [None; MAX_FDS],
             context,
             stack_ptr,
@@ -162,6 +244,7 @@ impl Process {
             base: stack_ptr,
             layout,
             kind: MemoryRegionKind::Stack,
+            permissions: MemoryPermissions::read_write(),
         })?;
 
         Ok(process)
@@ -183,6 +266,18 @@ impl Process {
         self.parent
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.is_idle
+    }
+
+    fn set_preempt_return(&mut self, rip: u64) {
+        self.preempt_return = Some(rip);
+    }
+
+    fn take_preempt_return(&mut self) -> Option<u64> {
+        self.preempt_return.take()
+    }
+
     fn set_fd(&mut self, index: usize, descriptor: FileDescriptor) -> Result<(), ProcessError> {
         if index >= MAX_FDS {
             return Err(ProcessError::InvalidFileDescriptor);
@@ -198,13 +293,27 @@ impl Process {
         self.fds[index]
     }
 
-    fn allocate_region(&mut self, layout: Layout, kind: MemoryRegionKind) -> Result<*mut u8, ProcessError> {
+    fn allocate_region_with_permissions(
+        &mut self,
+        layout: Layout,
+        kind: MemoryRegionKind,
+        permissions: MemoryPermissions,
+    ) -> Result<*mut u8, ProcessError> {
         let ptr = unsafe { heap::allocate(layout) };
         if ptr.is_null() {
             return Err(ProcessError::AllocationFailed);
         }
-        self.regions.register(MemoryRegion { base: ptr, layout, kind })?;
+        self.regions.register(MemoryRegion {
+            base: ptr,
+            layout,
+            kind,
+            permissions,
+        })?;
         Ok(ptr)
+    }
+
+    fn allocate_region(&mut self, layout: Layout, kind: MemoryRegionKind) -> Result<*mut u8, ProcessError> {
+        self.allocate_region_with_permissions(layout, kind, MemoryPermissions::read_write())
     }
 
     fn release_region(&mut self, ptr: *mut u8) -> Result<(), ProcessError> {
@@ -249,6 +358,9 @@ pub enum ProcessError {
     StackAllocationFailed,
     NotInitialized,
     MemoryRegionNotFound,
+    IdleAlreadyExists,
+    NoChildren,
+    ChildNotFound,
 }
 
 struct MemoryRegionList {
@@ -390,6 +502,7 @@ struct ProcessTable {
     capacity: usize,
     next_pid: Pid,
     init_pid: Option<Pid>,
+    idle_pid: Option<Pid>,
     initialized: bool,
 }
 
@@ -403,15 +516,24 @@ impl ProcessTable {
             capacity: 0,
             next_pid: 1,
             init_pid: None,
+            idle_pid: None,
             initialized: false,
         }
     }
 
-    fn spawn_kernel_process(&mut self, name: &'static str, parent: Option<Pid>, entry: ProcessEntry) -> Result<Pid, ProcessError> {
+    fn spawn_kernel_process(
+        &mut self,
+        name: &'static str,
+        parent: Option<Pid>,
+        entry: ProcessEntry,
+        is_idle: bool,
+    ) -> Result<Pid, ProcessError> {
         let pid = self.allocate_pid()?;
-        let process = Process::new_kernel(pid, name, parent, entry)?;
+        let process = Process::new_kernel(pid, name, parent, entry, is_idle)?;
         self.push(process)?;
-        if self.init_pid.is_none() {
+        if is_idle {
+            self.idle_pid = Some(pid);
+        } else if self.init_pid.is_none() {
             self.init_pid = Some(pid);
         }
         Ok(pid)
@@ -430,6 +552,25 @@ impl ProcessTable {
         }
         self.len += 1;
         Ok(())
+    }
+
+    fn remove_index(&mut self, index: usize) -> Process {
+        assert!(index < self.len);
+        unsafe {
+            let removed = self.entries.add(index).read();
+            if index != self.len - 1 {
+                let moved = self.entries.add(self.len - 1).read();
+                self.entries.add(index).write(moved);
+            }
+            self.len -= 1;
+            if Some(removed.pid) == self.idle_pid {
+                self.idle_pid = None;
+            }
+            if Some(removed.pid) == self.init_pid {
+                self.init_pid = None;
+            }
+            removed
+        }
     }
 
     fn ensure_capacity(&mut self, additional: usize) -> Result<(), ProcessError> {
@@ -489,6 +630,45 @@ impl ProcessTable {
         self.slice().iter().position(|p| p.pid == pid)
     }
 
+    fn has_child(&self, parent: Pid, target: Option<Pid>) -> bool {
+        self.slice().iter().any(|process| {
+            if process.parent != Some(parent) {
+                return false;
+            }
+            if let Some(target_pid) = target {
+                process.pid == target_pid
+            } else {
+                true
+            }
+        })
+    }
+
+    fn take_zombie_child(&mut self, parent: Pid, target: Option<Pid>) -> Option<(Pid, i32)> {
+        for index in 0..self.len {
+            unsafe {
+                let entry_ptr = self.entries.add(index);
+                if (*entry_ptr).parent != Some(parent) {
+                    continue;
+                }
+                if (*entry_ptr).state != ProcessState::Zombie {
+                    continue;
+                }
+                if let Some(target_pid) = target {
+                    if (*entry_ptr).pid != target_pid {
+                        continue;
+                    }
+                }
+
+                let pid = (*entry_ptr).pid;
+                let code = (*entry_ptr).exit_code.unwrap_or(0);
+                let process = self.remove_index(index);
+                drop(process);
+                return Some((pid, code));
+            }
+        }
+        None
+    }
+
     fn next_ready_index(&self, start: Option<usize>) -> Option<usize> {
         if self.len == 0 {
             return None;
@@ -497,14 +677,30 @@ impl ProcessTable {
         let slice = self.slice();
         let mut index = start.map(|i| (i + 1) % self.len).unwrap_or(0);
         let mut inspected = 0;
+        let mut idle_candidate = None;
         while inspected < self.len {
-            if slice[index].state == ProcessState::Ready {
-                return Some(index);
+            let process = &slice[index];
+            match process.state {
+                ProcessState::Ready => {
+                    if process.is_idle {
+                        if idle_candidate.is_none() {
+                            idle_candidate = Some(index);
+                        }
+                    } else {
+                        return Some(index);
+                    }
+                }
+                ProcessState::Running => {
+                    if process.is_idle && idle_candidate.is_none() {
+                        idle_candidate = Some(index);
+                    }
+                }
+                _ => {}
             }
             index = (index + 1) % self.len;
             inspected += 1;
         }
-        None
+        idle_candidate
     }
 
     fn get_mut(&mut self, pid: Pid) -> Option<&mut Process> {
@@ -552,7 +748,8 @@ pub fn init() -> Result<(), ProcessError> {
         return Ok(());
     }
     table.initialized = true;
-    klog!("[process] table initialised\n");
+    let idle_pid = table.spawn_kernel_process("idle", None, idle_task, true)?;
+    klog!("[process] table initialised idle_pid={}\n", idle_pid);
     Ok(())
 }
 
@@ -561,8 +758,21 @@ pub fn spawn_kernel_process(name: &'static str, entry: ProcessEntry) -> Result<P
     if !table.initialized {
         return Err(ProcessError::NotInitialized);
     }
-    let pid = table.spawn_kernel_process(name, current_pid(), entry)?;
+    let pid = table.spawn_kernel_process(name, current_pid(), entry, false)?;
     klog!("[process] spawned '{}' pid={}\n", name, pid);
+    Ok(pid)
+}
+
+pub fn spawn_idle_process(name: &'static str, entry: ProcessEntry) -> Result<Pid, ProcessError> {
+    let mut table = PROCESS_TABLE.lock();
+    if !table.initialized {
+        return Err(ProcessError::NotInitialized);
+    }
+    if table.idle_pid.is_some() {
+        return Err(ProcessError::IdleAlreadyExists);
+    }
+    let pid = table.spawn_kernel_process(name, None, entry, true)?;
+    klog!("[process] spawned idle '{}' pid={}\n", name, pid);
     Ok(pid)
 }
 
@@ -578,10 +788,159 @@ pub fn yield_now() {
     let _ = schedule_internal();
 }
 
+fn reschedule() {
+    while !schedule_internal() {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn block_current(channel: WaitChannel) -> Result<(), ProcessError> {
+    let pid = current_pid().ok_or(ProcessError::ProcessNotFound)?;
+    {
+        let mut table = PROCESS_TABLE.lock();
+        let process = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
+        process.state = ProcessState::Blocked;
+        process.wait_channel = Some(channel);
+        process.preempt_return = None;
+    }
+    reschedule();
+    Ok(())
+}
+
+pub fn wake_channel(event: WaitChannel) {
+    let mut table = PROCESS_TABLE.lock();
+    let slice = table.slice_mut();
+    for process in slice {
+        if process.state == ProcessState::Blocked {
+            if let Some(channel) = process.wait_channel {
+                if channel.matches_event(event) {
+                    process.wait_channel = None;
+                    process.state = ProcessState::Ready;
+                    process.preempt_return = None;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn request_preempt(frame: &mut InterruptFrame) {
+    let pid = match current_pid() {
+        Some(pid) => pid,
+        None => return,
+    };
+
+    let mut table = match PROCESS_TABLE.try_lock() {
+        Some(guard) => guard,
+        None => return,
+    };
+
+    let idx = match table.find_index_by_pid(pid) {
+        Some(i) => i,
+        None => return,
+    };
+
+    let slice = table.slice_mut();
+    if let Some(process) = slice.get_mut(idx) {
+        if process.state != ProcessState::Running || process.is_idle() {
+            return;
+        }
+        if process.preempt_return.is_some() {
+            return;
+        }
+
+        process.set_preempt_return(frame.rip);
+        frame.rip = preempt_trampoline as u64;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn preempt_do_switch() -> u64 {
+    reschedule();
+
+    let pid = current_pid().expect("preempted process missing current pid");
+    let mut table = PROCESS_TABLE.lock();
+    let process = table
+        .get_mut(pid)
+        .expect("preempted process missing from table");
+    process
+        .take_preempt_return()
+        .unwrap_or(process.context.rip)
+}
+
+pub fn exit_current(exit_code: i32) -> ! {
+    let pid = current_pid().expect("exit_current requires a running process");
+    let parent = {
+        let mut table = PROCESS_TABLE.lock();
+        let process = table
+            .get_mut(pid)
+            .expect("current pid missing from table during exit");
+        process.state = ProcessState::Zombie;
+        process.wait_channel = None;
+        process.exit_code = Some(exit_code);
+        process.preempt_return = None;
+        process.parent
+    };
+
+    if let Some(parent_pid) = parent {
+        wake_channel(WaitChannel::Child(parent_pid));
+    }
+
+    reschedule();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn wait_for_child(target: Option<Pid>) -> Result<(Pid, i32), ProcessError> {
+    let current = current_pid().ok_or(ProcessError::ProcessNotFound)?;
+
+    loop {
+        let should_block = {
+            let mut table = PROCESS_TABLE.lock();
+            if !table.has_child(current, target) {
+                return if target.is_some() {
+                    Err(ProcessError::ChildNotFound)
+                } else {
+                    Err(ProcessError::NoChildren)
+                };
+            }
+
+            if let Some((pid, code)) = table.take_zombie_child(current, target) {
+                return Ok((pid, code));
+            }
+
+            let process = table
+                .get_mut(current)
+                .ok_or(ProcessError::ProcessNotFound)?;
+            let wait_channel = target
+                .map(WaitChannel::Child)
+                .unwrap_or(WaitChannel::ChildAny);
+            process.state = ProcessState::Blocked;
+            process.wait_channel = Some(wait_channel);
+            process.preempt_return = None;
+            true
+        };
+
+        if should_block {
+            reschedule();
+        }
+    }
+}
+
 pub fn allocate_for_process(pid: Pid, layout: Layout, kind: MemoryRegionKind) -> Result<*mut u8, ProcessError> {
+    allocate_for_process_with_permissions(pid, layout, kind, MemoryPermissions::read_write())
+}
+
+pub fn allocate_for_process_with_permissions(
+    pid: Pid,
+    layout: Layout,
+    kind: MemoryRegionKind,
+    permissions: MemoryPermissions,
+) -> Result<*mut u8, ProcessError> {
     let mut table = PROCESS_TABLE.lock();
     let process = table.get_mut(pid).ok_or(ProcessError::ProcessNotFound)?;
-    process.allocate_region(layout, kind)
+    process.allocate_region_with_permissions(layout, kind, permissions)
 }
 
 pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
@@ -630,7 +989,7 @@ fn schedule_internal() -> bool {
 
         let current_ctx_ptr: *mut Context = match current_index {
             Some(idx) => &mut slice[idx].context as *mut Context,
-            None => unsafe { ptr::addr_of_mut!(BOOT_CONTEXT) },
+            None => ptr::addr_of_mut!(BOOT_CONTEXT),
         };
 
         (current_ctx_ptr, next_ctx_ptr, next_pid)
@@ -752,6 +1111,13 @@ fn dump_process_inner(process: &Process) {
         process.name,
         state_name(process.state),
         process.parent);
+    klog!(
+        "           wait={:?} exit_code={:?} idle={} preempt_ret={:?}\n",
+        process.wait_channel,
+        process.exit_code,
+        process.is_idle,
+        process.preempt_return
+    );
 
     klog!(
         "           stack_base=0x{:016X} rip=0x{:016X} rsp=0x{:016X} rbp=0x{:016X}\n",
@@ -786,12 +1152,18 @@ fn dump_process_inner(process: &Process) {
             MemoryRegionKind::Heap => "heap",
             MemoryRegionKind::Other => "other",
         };
+        let read = if region.permissions.read() { 'r' } else { '-' };
+        let write = if region.permissions.write() { 'w' } else { '-' };
+        let exec = if region.permissions.execute() { 'x' } else { '-' };
         klog!(
-            "           region {:>6} base=0x{:016X} size={:>6} align={}\n",
+            "           region {:>6} base=0x{:016X} size={:>6} align={} perms={}{}{}\n",
             kind,
             region.base as usize,
             region.layout.size(),
-            region.layout.align()
+            region.layout.align(),
+            read,
+            write,
+            exec
         );
     }
 }

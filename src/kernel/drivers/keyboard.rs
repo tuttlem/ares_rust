@@ -1,4 +1,5 @@
 use crate::drivers::{CharDevice, Driver, DriverError, DriverKind};
+use crate::process::{self, WaitChannel};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::drivers::keyboard as arch;
@@ -33,7 +34,19 @@ impl Driver for Keyboard {
 
 impl CharDevice for Keyboard {
     fn read(&self, buf: &mut [u8]) -> Result<usize, DriverError> {
-        Ok(arch::read(buf))
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        loop {
+            let count = arch::read(buf);
+            if count > 0 {
+                return Ok(count);
+            }
+
+            process::block_current(WaitChannel::KeyboardInput)
+                .map_err(|_| DriverError::IoError)?;
+        }
     }
 
     fn write(&self, _buf: &[u8]) -> Result<usize, DriverError> {

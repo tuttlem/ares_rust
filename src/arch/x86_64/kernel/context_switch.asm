@@ -1,4 +1,5 @@
 [global context_switch]
+[global preempt_trampoline]
 
 ; void context_switch(Context* current, const Context* next)
 ; rdi = current, rsi = next
@@ -35,5 +36,11 @@ context_switch:
 
 .return_point:
     ret
+
+[extern preempt_do_switch]
+
+preempt_trampoline:
+    call preempt_do_switch
+    jmp rax
 
 section .note.GNU-stack
