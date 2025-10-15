@@ -36,6 +36,28 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     mem::phys::init(info_addr);
     heap::init();
     drivers::init();
+
+    let vendor_raw = cpu::vendor_string();
+    let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
+    klog!("[kmain] CPU vendor: {vendor}\n");
+    klog!("[kmain] CPUID max basic leaf: 0x{:08X}\n", cpu::highest_basic_leaf());
+    klog!("[kmain] CPUID max extended leaf: 0x{:08X}\n", cpu::highest_extended_leaf());
+
+    let features = cpu::features();
+    klog!("[kmain] CPUID feature ECX: 0x{:08X}\n", features.ecx);
+    klog!("[kmain] CPUID feature EDX: 0x{:08X}\n", features.edx);
+
+    if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
+        unsafe { cpu::enable_sse(); }
+        klog::writeln("[kmain] SSE/SSE2 enabled");
+    } else {
+        klog::writeln("[kmain] SSE/SSE2 unavailable");
+    }
+
+    if features.has_ecx(cpu::feature::ecx::AVX) {
+        klog::writeln("[kmain] AVX supported");
+    }
+
     drivers::register_builtin();
     drivers::list_drivers();
     drivers::self_test();
@@ -74,37 +96,11 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     timer::init();
 
-    let vendor_raw = cpu::vendor_string();
-    let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
-    klog!("[kmain] CPU vendor: {vendor}
-");
-    klog!("[kmain] CPUID max basic leaf: 0x{:08X}
-", cpu::highest_basic_leaf());
-    klog!("[kmain] CPUID max extended leaf: 0x{:08X}
-", cpu::highest_extended_leaf());
-
-    let features = cpu::features();
-    klog!("[kmain] CPUID feature ECX: 0x{:08X}
-", features.ecx);
-    klog!("[kmain] CPUID feature EDX: 0x{:08X}
-", features.edx);
-
-    if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
-        unsafe { cpu::enable_sse(); }
-        klog::writeln("[kmain] SSE/SSE2 enabled");
-    } else {
-        klog::writeln("[kmain] SSE/SSE2 unavailable");
-    }
-
-    if features.has_ecx(cpu::feature::ecx::AVX) {
-        klog::writeln("[kmain] AVX supported");
-    }
-
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
     process::spawn_kernel_process("ticker_a", ticker_task_a).expect("spawn ticker_a");
     process::spawn_kernel_process("ticker_b", ticker_task_b).expect("spawn ticker_b");
     process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
-    process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
+    // process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
     process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
 
     interrupts::enable();

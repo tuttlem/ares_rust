@@ -83,6 +83,7 @@ pub mod vectors {
     pub const KEYBOARD: u8 = 33;
     pub const PAGE_FAULT: u8 = 14;
     pub const GENERAL_PROTECTION: u8 = 13;
+    pub const INVALID_OPCODE: u8 = 6;
 }
 
 const PIC_MASTER_OFFSET: u8 = 32;
@@ -249,6 +250,30 @@ fn general_protection_handler(frame: &mut InterruptFrame) {
     }
 }
 
+fn invalid_opcode_handler(frame: &mut InterruptFrame) {
+    use crate::process;
+    use core::slice;
+
+    let pid = process::current_pid();
+    let rip = frame.rip;
+    let bytes = unsafe { slice::from_raw_parts(rip as *const u8, 16) };
+
+    klog!(
+        "[invop] pid={:?} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X} bytes={:02X?}\n",
+        pid,
+        rip,
+        frame.cs,
+        frame.rflags,
+        bytes
+    );
+
+    if let Some(pid) = pid {
+        if let Ok(()) = process::dump_process(pid) {
+            klog!("[invop] dumped process {}\n", pid);
+        }
+    }
+}
+
 #[no_mangle]
 extern "C" fn isr_handler(frame: &mut InterruptFrame) {
     dispatch(frame);
@@ -286,6 +311,7 @@ unsafe fn setup_idt() {
 
     register_handler(vectors::PAGE_FAULT, page_fault_handler);
     register_handler(vectors::GENERAL_PROTECTION, general_protection_handler);
+    register_handler(vectors::INVALID_OPCODE, invalid_opcode_handler);
 
     for (i, handler) in irq_handlers.iter().enumerate() {
         let index = 32 + i;

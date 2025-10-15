@@ -76,6 +76,13 @@ impl DriverSlot {
             _ => None,
         }
     }
+
+    fn as_block(&self) -> Option<&'static dyn BlockDevice> {
+        match self {
+            DriverSlot::Block(dev) => Some(*dev),
+            _ => None,
+        }
+    }
 }
 
 struct DriverRegistry {
@@ -230,6 +237,30 @@ where
     }
 }
 
+pub fn for_each_block_device<F>(mut f: F)
+where
+    F: FnMut(&'static dyn BlockDevice),
+{
+    let registry = REGISTRY.lock();
+    for slot in registry.iter() {
+        if let Some(dev) = slot.as_block() {
+            f(dev);
+        }
+    }
+}
+
+pub fn block_device_by_name(name: &str) -> Option<&'static dyn BlockDevice> {
+    let registry = REGISTRY.lock();
+    for slot in registry.iter() {
+        if let Some(dev) = slot.as_block() {
+            if dev.name() == name {
+                return Some(dev);
+            }
+        }
+    }
+    None
+}
+
 pub fn self_test() {
     for_each_char_device(|dev| {
         let mut buffer = [0u8; 16];
@@ -250,5 +281,13 @@ pub fn self_test() {
                 dev.name()
             );
         }
+    });
+
+    for_each_block_device(|dev| {
+        klog!(
+            "[driver] block device '{}' block_size={}\n",
+            dev.name(),
+            dev.block_size()
+        );
     });
 }
