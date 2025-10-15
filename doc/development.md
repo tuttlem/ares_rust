@@ -10,6 +10,7 @@
 | Command | Description |
 |---------|-------------|
 | `./domake build-x86_64` | Compile the kernel and assemble the bootable ISO into `dist/x86_64/`. |
+| `./domake hdd-image` | (Optional) Build a 64 MiB BIOS bootable disk image at `dist/x86_64/disk.img`. |
 | `./domake clean` | Remove build artifacts (`build/`, `dist/`). |
 
 The `Makefile` drives `cargo xbuild` and the NASM assembly passes for the boot stubs/context switcher.
@@ -21,6 +22,15 @@ For interactive serial output on the host terminal:
 ```bash
 qemu-system-x86_64 \
   -cdrom dist/x86_64/kernel.iso \
+  -serial stdio \
+  -no-reboot
+```
+
+To boot from the optional hard-disk image instead of the ISO:
+
+```bash
+qemu-system-x86_64 \
+  -drive file=dist/x86_64/disk.img,format=raw,if=ide \
   -serial stdio \
   -no-reboot
 ```

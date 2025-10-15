@@ -90,7 +90,10 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 ", features.edx);
 
     if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
-        klog::writeln("[kmain] SSE/SSE2 supported");
+        unsafe { cpu::enable_sse(); }
+        klog::writeln("[kmain] SSE/SSE2 enabled");
+    } else {
+        klog::writeln("[kmain] SSE/SSE2 unavailable");
     }
 
     if features.has_ecx(cpu::feature::ecx::AVX) {

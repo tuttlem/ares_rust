@@ -1,5 +1,20 @@
 mod cpuid;
 
+/// Enable SSE and related state-management instructions before using them.
+pub unsafe fn enable_sse() {
+    let mut cr0: u64;
+    core::arch::asm!("mov {value}, cr0", value = out(reg) cr0, options(nomem, preserves_flags));
+    cr0 |= 1 << 1; // set MP
+    cr0 &= !(1 << 2); // clear EM
+    core::arch::asm!("mov cr0, {value}", value = in(reg) cr0, options(nomem, preserves_flags));
+
+    let mut cr4: u64;
+    core::arch::asm!("mov {value}, cr4", value = out(reg) cr4, options(nomem, preserves_flags));
+    cr4 |= 1 << 9; // set OSFXSR
+    cr4 |= 1 << 10; // set OSXMMEXCPT
+    core::arch::asm!("mov cr4, {value}", value = in(reg) cr4, options(nomem, preserves_flags));
+}
+
 pub struct CpuidResult {
     pub eax: u32,
     pub ebx: u32,
