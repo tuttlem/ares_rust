@@ -13,7 +13,8 @@ RUST_LIBDIR  	:= $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
 RUST_RLIBS   	:= $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/liballoc-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib) \
-                 $(wildcard $(RUST_LIBDIR)/librustc_std_workspace_core-*.rlib)
+                 $(wildcard $(RUST_LIBDIR)/librustc_std_workspace_core-*.rlib) \
+                 $(wildcard $(RUST_LIBDIR)/libpanic_abort-*.rlib)
 
 boot_source_dir       := src/arch/x86_64/boot
 boot_build_dir        := build/x86_64/boot
@@ -54,27 +55,8 @@ build-x86_64: $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_f
 	cp dist/x86_64/kernel.bin targets/x86_64/iso/boot/kernel.bin && \
 	grub-mkrescue /usr/lib/grub/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso
 
-.PHONY: hdd-image
-
-hdd-image: build-x86_64
-	mkdir -p dist/x86_64 && \
-	tmpdir=$$(mktemp -d); \
-	core_img=$$tmpdir/core.img; \
-	grub_cfg=$$tmpdir/grub.cfg; \
-	printf 'set timeout=0\nset default=0\n\nmenuentry "Ares" {\n    multiboot (memdisk)/boot/kernel.bin\n    boot\n}\n' > $$grub_cfg && \
-	grub-mkstandalone -O i386-pc \
-		-o $$core_img \
-		--modules="biosdisk part_msdos multiboot normal" \
-		"boot/grub/grub.cfg=$$grub_cfg" \
-		"boot/kernel.bin=dist/x86_64/kernel.bin" && \
-	rm -f dist/x86_64/disk.img && \
-	truncate -s 64M dist/x86_64/disk.img && \
-	dd if=/usr/lib/grub/i386-pc/boot.img of=dist/x86_64/disk.img conv=notrunc status=none && \
-	dd if=$$core_img of=dist/x86_64/disk.img bs=512 seek=1 conv=notrunc status=none && \
-	rm -rf $$tmpdir
-
 clean:
-	rm -Rf ./dist
+	rm -Rf ./distWhe
 	rm -Rf ./build
 
 run: build-x86_64
