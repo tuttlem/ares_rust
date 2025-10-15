@@ -1,8 +1,9 @@
 use crate::klog;
-use super::{register_char, CharDevice, Driver, DriverError, DriverKind};
+use super::{register_block, register_char, CharDevice, Driver, DriverError, DriverKind};
 
 use super::console;
 use super::keyboard;
+use crate::arch::x86_64::drivers::ata;
 struct NullDevice;
 struct ZeroDevice;
 
@@ -66,6 +67,9 @@ pub fn register() {
     }
     if let Err(err) = register_char(keyboard::driver()) {
         klog!("[driver] failed to register keyboard: {:?}\n", err);
+    }
+    if let Err(err) = register_block(ata::driver()) {
+        klog!("[driver] failed to register ata primary: {:?}\n", err);
     }
     if let Err(err) = register_char(&NULL_DRIVER) {
         klog!("[driver] failed to register null device: {:?}\n", err);
