@@ -9,6 +9,77 @@ const RESERVED_END: u64 = 0x0010_0000; // keep first 1 MiB reserved
 
 pub const FRAME_SIZE: u64 = PAGE_SIZE;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Frame {
+    start: u64,
+}
+
+impl Frame {
+    pub fn containing(addr: u64) -> Self {
+        Self { start: align_down_u64(addr, PAGE_SIZE) }
+    }
+
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    pub fn end(&self) -> u64 {
+        self.start + FRAME_SIZE
+    }
+
+    pub fn number(&self) -> u64 {
+        self.start / FRAME_SIZE
+    }
+
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.start as *mut u8
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FrameRange {
+    start: Frame,
+    count: usize,
+}
+
+impl FrameRange {
+    pub fn start(&self) -> Frame {
+        self.start
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn iter(&self) -> FrameIter {
+        FrameIter {
+            next: self.start,
+            remaining: self.count,
+        }
+    }
+}
+
+pub struct FrameIter {
+    next: Frame,
+    remaining: usize,
+}
+
+impl Iterator for FrameIter {
+    type Item = Frame;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let current = self.next;
+        self.next = Frame {
+            start: current.start + FRAME_SIZE,
+        };
+        self.remaining -= 1;
+        Some(current)
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct MemoryRegion {
     pub base: u64,
@@ -54,7 +125,7 @@ impl FrameAllocator {
         self.advance_to_next_region(map);
     }
 
-    fn allocate(&mut self, map: &MemoryMap) -> Option<u64> {
+    fn allocate(&mut self, map: &MemoryMap) -> Option<Frame> {
         loop {
             if self.current >= self.end {
                 self.advance_to_next_region(map);
@@ -70,11 +141,11 @@ impl FrameAllocator {
                 continue;
             }
 
-            return Some(frame);
+            return Some(Frame { start: frame });
         }
     }
 
-    fn free(&mut self, _frame: u64) {
+    fn free(&mut self, _frame: Frame) {
         // no-op for bump allocator
     }
 
@@ -208,16 +279,54 @@ pub fn summary() -> MemorySummary {
     }
 }
 
-pub fn allocate_frame() -> Option<u64> {
+pub fn allocate_frame() -> Option<Frame> {
     let map_guard = PHYS_MEMORY_MAP.lock();
     let mut allocator = FRAME_ALLOCATOR.lock();
     let frame = allocator.allocate(&map_guard);
     frame
 }
 
-pub fn free_frame(frame: u64) {
+pub fn allocate_frames(count: usize) -> Option<FrameRange> {
+    if count == 0 {
+        return None;
+    }
+
+    let map_guard = PHYS_MEMORY_MAP.lock();
+    let mut allocator = FRAME_ALLOCATOR.lock();
+
+    let first = allocator.allocate(&map_guard)?;
+    let mut last = first;
+
+    for _ in 1..count {
+        match allocator.allocate(&map_guard) {
+            Some(next) if next.start == last.start + FRAME_SIZE => {
+                last = next;
+            }
+            Some(_) | None => {
+                // Out-of-line allocation; we can't rewind the bump pointer,
+                // so just report the contiguous sequence obtained so far.
+                let span_frames = ((last.start - first.start) / FRAME_SIZE) as usize + 1;
+                return Some(FrameRange {
+                    start: first,
+                    count: span_frames,
+                });
+            }
+        }
+    }
+
+    Some(FrameRange {
+        start: first,
+        count,
+    })
+}
+
+pub fn free_frame(frame: Frame) {
     let mut allocator = FRAME_ALLOCATOR.lock();
     allocator.free(frame);
+}
+
+pub fn frame_size() -> u64 {
+    FRAME_SIZE
 }
 
 unsafe fn parse(multiboot_info_addr: usize) {
@@ -271,4 +380,8 @@ fn align_up(value: usize, align: usize) -> usize {
 fn align_up_u64(value: u64, align: u64) -> u64 {
     let mask = align - 1;
     (value + mask) & !mask
+}
+
+fn align_down_u64(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
 }

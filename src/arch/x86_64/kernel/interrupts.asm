@@ -14,7 +14,8 @@
    push  rcx
    push  rdx
    push  rbx
-   push  rsp
+   mov   rax, rsp
+   push  rax
    push  rbp
    push  rsi
    push  rdi
@@ -40,7 +41,8 @@
    pop  rdi
    pop  rsi
    pop  rbp
-   pop  rsp
+   pop  rax
+   mov  rsp, rax
    pop  rbx
    pop  rdx
    pop  rcx

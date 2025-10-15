@@ -12,7 +12,8 @@ RUST_SYSROOT 	:= $(shell $(RUSTC) --print sysroot)
 RUST_LIBDIR  	:= $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/lib
 RUST_RLIBS   	:= $(wildcard $(RUST_LIBDIR)/libcore-*.rlib) \
                  $(wildcard $(RUST_LIBDIR)/liballoc-*.rlib) \
-                 $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib)
+                 $(wildcard $(RUST_LIBDIR)/libcompiler_builtins-*.rlib) \
+                 $(wildcard $(RUST_LIBDIR)/librustc_std_workspace_core-*.rlib)
 
 boot_source_dir       := src/arch/x86_64/boot
 boot_build_dir        := build/x86_64/boot

@@ -9,6 +9,8 @@ use super::msr;
 pub mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
+    pub const YIELD: u64 = 24; // matches Linux sched_yield
+    pub const EXIT: u64 = 60;  // matches Linux exit
 }
 
 pub mod fd {
@@ -64,6 +66,8 @@ fn dispatch(frame: &mut SyscallFrame) -> u64 {
     match frame.rax {
         nr::READ => sys_read(frame.rdi, frame.rsi, frame.rdx),
         nr::WRITE => sys_write(frame.rdi, frame.rsi, frame.rdx),
+        nr::YIELD => sys_yield(),
+        nr::EXIT => sys_exit(frame.rdi),
         _ => ERR_NOSYS,
     }
 }
@@ -144,6 +148,16 @@ fn read_via_descriptor(descriptor: FileDescriptor, buf: &mut [u8]) -> u64 {
     }
 }
 
+fn sys_yield() -> u64 {
+    process::yield_now();
+    0
+}
+
+fn sys_exit(code: u64) -> u64 {
+    let status = (code & 0xFFFF_FFFF) as i32;
+    process::exit_current(status);
+}
+
 pub fn write(fd: u64, bytes: &[u8]) -> u64 {
     let mut frame = SyscallFrame::empty();
     frame.rax = nr::WRITE;
@@ -160,6 +174,22 @@ pub fn read(fd: u64, buf: &mut [u8]) -> u64 {
     frame.rsi = buf.as_mut_ptr() as u64;
     frame.rdx = buf.len() as u64;
     dispatch(&mut frame)
+}
+
+pub fn yield_now() {
+    let mut frame = SyscallFrame::empty();
+    frame.rax = nr::YIELD;
+    let _ = dispatch(&mut frame);
+}
+
+pub fn exit(status: i32) -> ! {
+    let mut frame = SyscallFrame::empty();
+    frame.rax = nr::EXIT;
+    frame.rdi = status as u64;
+    let _ = dispatch(&mut frame);
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 pub fn init() {

@@ -9,7 +9,7 @@ use crate::sync::spinlock::SpinLock;
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
 
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::{ptr, slice};
 
 pub type Pid = u32;
@@ -183,6 +183,7 @@ pub struct Process {
     exit_code: Option<i32>,
     is_idle: bool,
     preempt_return: Option<u64>,
+    cpu_slices: u64,
     fds: [Option<FileDescriptor>; MAX_FDS],
     context: Context,
     stack_ptr: *mut u8,
@@ -226,6 +227,7 @@ impl Process {
             exit_code: None,
             is_idle,
             preempt_return: None,
+            cpu_slices: 0,
             fds: [None; MAX_FDS],
             context,
             stack_ptr,
@@ -268,6 +270,10 @@ impl Process {
 
     pub fn is_idle(&self) -> bool {
         self.is_idle
+    }
+
+    pub fn cpu_slices(&self) -> u64 {
+        self.cpu_slices
     }
 
     fn set_preempt_return(&mut self, rip: u64) {
@@ -741,6 +747,7 @@ impl Drop for ProcessTable {
 static PROCESS_TABLE: SpinLock<ProcessTable> = SpinLock::new(ProcessTable::new());
 static CURRENT_PID: AtomicU32 = AtomicU32::new(0);
 static mut BOOT_CONTEXT: Context = Context::new();
+static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
 pub fn init() -> Result<(), ProcessError> {
     let mut table = PROCESS_TABLE.lock();
@@ -825,6 +832,40 @@ pub fn wake_channel(event: WaitChannel) {
 
 #[cfg(target_arch = "x86_64")]
 pub fn request_preempt(frame: &mut InterruptFrame) {
+    NEED_RESCHED.store(true, Ordering::Release);
+
+    const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
+
+    let rip = frame.rip;
+
+    if rip < KERNEL_BASE {
+        return;
+    }
+
+    const KERNEL_TOP_BITS: u64 = 0xFFFF;
+    if (rip >> 48) != KERNEL_TOP_BITS {
+        let pid_for_log = current_pid().unwrap_or(0);
+        /*
+        klog!(
+            "[request_preempt] non-canonical rip pid={} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
+            pid_for_log,
+            rip,
+            frame.cs,
+            frame.rflags
+        );
+        */
+
+        unsafe {
+            let raw = frame as *const InterruptFrame as *const u64;
+            for i in 0..8 {
+                let word = core::ptr::read(raw.add(i));
+                //klog!("[request_preempt] stack[{i}] = 0x{:016X}\n", word);
+            }
+        }
+
+        return;
+    }
+
     let pid = match current_pid() {
         Some(pid) => pid,
         None => return,
@@ -850,12 +891,21 @@ pub fn request_preempt(frame: &mut InterruptFrame) {
         }
 
         process.set_preempt_return(frame.rip);
+        /*
+        klog!(
+            "[request_preempt] pid={} frame_rip=0x{:016X} return_rip=0x{:016X}\n",
+            pid,
+            frame.rip,
+            process.context.rip
+        );
+        */
         frame.rip = preempt_trampoline as u64;
     }
 }
 
 #[no_mangle]
 pub extern "C" fn preempt_do_switch() -> u64 {
+    NEED_RESCHED.store(false, Ordering::Release);
     reschedule();
 
     let pid = current_pid().expect("preempted process missing current pid");
@@ -863,9 +913,18 @@ pub extern "C" fn preempt_do_switch() -> u64 {
     let process = table
         .get_mut(pid)
         .expect("preempted process missing from table");
-    process
+    let target = process
         .take_preempt_return()
-        .unwrap_or(process.context.rip)
+        .unwrap_or(process.context.rip);
+        /*
+    klog!(
+        "[preempt] resume pid={} target_rip=0x{:016X} context_rip=0x{:016X}\n",
+        pid,
+        target,
+        process.context.rip
+    );
+    */
+    target
 }
 
 pub fn exit_current(exit_code: i32) -> ! {
@@ -982,6 +1041,7 @@ fn schedule_internal() -> bool {
 
         if let Some(process) = slice.get_mut(next_index) {
             process.state = ProcessState::Running;
+            process.cpu_slices = process.cpu_slices.saturating_add(1);
         }
 
         let next_pid = slice[next_index].pid;
@@ -1007,11 +1067,32 @@ pub fn get_process(pid: Pid) -> Option<ProcessSnapshot> {
     table.get(pid).map(ProcessSnapshot::from)
 }
 
+pub fn scheduler_stats() -> SchedulerStats {
+    let table = PROCESS_TABLE.lock();
+    let mut stats = SchedulerStats::empty();
+    stats.need_resched = NEED_RESCHED.load(Ordering::Acquire);
+
+    for process in table.slice() {
+        stats.total += 1;
+        stats.total_slices = stats.total_slices.saturating_add(process.cpu_slices);
+        match process.state {
+            ProcessState::Ready => stats.ready += 1,
+            ProcessState::Running => stats.running += 1,
+            ProcessState::Blocked => stats.blocked += 1,
+            ProcessState::Zombie => stats.zombie += 1,
+        }
+    }
+
+    stats
+}
+
 pub struct ProcessSnapshot {
     pid: Pid,
     parent: Option<Pid>,
     name: &'static str,
     state: ProcessState,
+    cpu_slices: u64,
+    is_idle: bool,
 }
 
 impl ProcessSnapshot {
@@ -1021,6 +1102,8 @@ impl ProcessSnapshot {
             parent: process.parent,
             name: process.name,
             state: process.state,
+            cpu_slices: process.cpu_slices,
+            is_idle: process.is_idle,
         }
     }
 
@@ -1038,6 +1121,38 @@ impl ProcessSnapshot {
 
     pub fn state(&self) -> ProcessState {
         self.state
+    }
+
+    pub fn cpu_slices(&self) -> u64 {
+        self.cpu_slices
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.is_idle
+    }
+}
+
+pub struct SchedulerStats {
+    pub total: usize,
+    pub ready: usize,
+    pub running: usize,
+    pub blocked: usize,
+    pub zombie: usize,
+    pub total_slices: u64,
+    pub need_resched: bool,
+}
+
+impl SchedulerStats {
+    const fn empty() -> Self {
+        Self {
+            total: 0,
+            ready: 0,
+            running: 0,
+            blocked: 0,
+            zombie: 0,
+            total_slices: 0,
+            need_resched: false,
+        }
     }
 }
 
@@ -1098,11 +1213,25 @@ pub fn dump_current_process() -> Result<(), ProcessError> {
 }
 
 pub fn dump_all_processes() {
-    let table = PROCESS_TABLE.lock();
-    let slice = table.slice();
-    for process in slice {
-        dump_process_inner(process);
+    {
+        let table = PROCESS_TABLE.lock();
+        let slice = table.slice();
+        for process in slice {
+            dump_process_inner(process);
+        }
     }
+
+    let stats = scheduler_stats();
+    klog!(
+        "[process] summary total={} ready={} running={} blocked={} zombie={} slices={} need_resched={}\n",
+        stats.total,
+        stats.ready,
+        stats.running,
+        stats.blocked,
+        stats.zombie,
+        stats.total_slices,
+        stats.need_resched
+    );
 }
 
 fn dump_process_inner(process: &Process) {
@@ -1112,11 +1241,12 @@ fn dump_process_inner(process: &Process) {
         state_name(process.state),
         process.parent);
     klog!(
-        "           wait={:?} exit_code={:?} idle={} preempt_ret={:?}\n",
+        "           wait={:?} exit_code={:?} idle={} preempt_ret={:?} slices={}\n",
         process.wait_channel,
         process.exit_code,
         process.is_idle,
-        process.preempt_return
+        process.preempt_return,
+        process.cpu_slices
     );
 
     klog!(

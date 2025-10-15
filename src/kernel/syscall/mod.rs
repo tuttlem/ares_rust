@@ -7,6 +7,8 @@ pub use crate::arch::x86_64::kernel::syscall::*;
 pub mod nr {
     pub const READ: u64 = 0;
     pub const WRITE: u64 = 1;
+    pub const YIELD: u64 = 24;
+    pub const EXIT: u64 = 60;
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -27,4 +29,12 @@ pub fn read(_fd: u64, _buf: &mut [u8]) -> u64 {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn write(_fd: u64, bytes: &[u8]) -> u64 {
     bytes.len() as u64
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn yield_now() {}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn exit(_code: i32) -> ! {
+    loop {}
 }

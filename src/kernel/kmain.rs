@@ -141,18 +141,20 @@ fn ticker_loop(name: &'static str, stdout_msg: &'static [u8]) -> ! {
     let mut counter: u64 = 0;
     loop {
         counter = counter.wrapping_add(1);
+        /*
         klog!(
             "[ticker-{name}] heartbeat count={} tick={}\n",
             counter,
             timer::ticks()
         );
+        */
         if counter % 32 == 0 {
             let _ = syscall::write(syscall::fd::STDOUT, stdout_msg);
         }
         for _ in 0..5_000 {
             core::hint::spin_loop();
         }
-        process::yield_now();
+        syscall::yield_now();
     }
 }
 
@@ -203,7 +205,7 @@ extern "C" fn worker_task() -> ! {
     let msg = b"[worker] tick\n";
     loop {
         if iterations >= 3 {
-            process::exit_current(0);
+            syscall::exit(0);
         }
         iterations += 1;
         klog!(
@@ -218,7 +220,7 @@ extern "C" fn worker_task() -> ! {
         for _ in 0..15_000 {
             core::hint::spin_loop();
         }
-        process::yield_now();
+        syscall::yield_now();
     }
 }
 
