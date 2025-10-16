@@ -264,34 +264,3 @@ pub fn block_device_by_name(name: &str) -> Option<&'static dyn BlockDevice> {
     }
     None
 }
-
-pub fn self_test() {
-    for_each_char_device(|dev| {
-        let mut buffer = [0u8; 16];
-        if let Ok(bytes) = dev.read(&mut buffer) {
-            klog!(
-                "[driver] test read {} bytes from '{}': {:02X?}\n",
-                bytes,
-                dev.name(),
-                &buffer[..bytes.min(buffer.len())]
-            );
-        }
-
-        let payload = b"driver-test";
-        if let Ok(bytes) = dev.write(payload) {
-            klog!(
-                "[driver] test wrote {} bytes to '{}'\n",
-                bytes,
-                dev.name()
-            );
-        }
-    });
-
-    for_each_block_device(|dev| {
-        klog!(
-            "[driver] block device '{}' block_size={}\n",
-            dev.name(),
-            dev.block_size()
-        );
-    });
-}

@@ -19,7 +19,7 @@ The kernel ships with three default character devices:
 | `/dev/null` | Not exposed by default FD table | Discards writes, returns EOF on reads. |
 | `/dev/zero` | Not exposed by default FD table | Returns zeroed bytes, accepts and ignores writes. |
 
-The initialization path (`drivers::init()`) registers these devices and `drivers::self_test()` performs small sanity checks (e.g., writing to `/dev/null` and `/dev/zero`).
+The initialization path (`drivers::init()`) registers these devices so they are available to the kernel scheduler and syscalls.
 
 ## Extending the registry
 

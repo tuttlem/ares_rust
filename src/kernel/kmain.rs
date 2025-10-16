@@ -71,7 +71,6 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     } else {
         klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
     }
-    drivers::self_test();
     process::init().expect("process init");
     syscall::init();
     let banner = b"[ares] Booting Ares kernel\n";
