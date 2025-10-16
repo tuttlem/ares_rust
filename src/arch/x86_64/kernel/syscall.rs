@@ -2,7 +2,7 @@
 
 use crate::klog;
 use crate::process;
-use crate::process::FileDescriptor;
+use crate::process::ProcessError;
 use core::slice;
 use super::msr;
 
@@ -17,6 +17,7 @@ pub mod fd {
     pub const STDIN: u64 = 0;
     pub const STDOUT: u64 = 1;
     pub const STDERR: u64 = 2;
+    pub const SCRATCH: u64 = 3;
 }
 
 const ERR_BADF: u64 = u64::MAX - 0;
@@ -92,15 +93,18 @@ fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
         }
     };
 
-    let descriptor = match process::descriptor(current_pid, fd as usize) {
-        Some(desc) => desc,
-        None => {
+    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.read(buffer)) {
+        Ok(Ok(count)) => count as u64,
+        Ok(Err(_)) => ERR_BADF,
+        Err(ProcessError::InvalidFileDescriptor) => {
             klog!("[syscall] pid {} missing fd {}\n", current_pid, fd);
-            return ERR_BADF;
+            ERR_BADF
         }
-    };
-
-    read_via_descriptor(descriptor, buffer)
+        Err(err) => {
+            klog!("[syscall] read failed pid {} fd {} err {:?}\n", current_pid, fd, err);
+            ERR_BADF
+        }
+    }
 }
 
 fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
@@ -123,28 +127,17 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
         }
     };
 
-    let descriptor = match process::descriptor(current_pid, fd as usize) {
-        Some(desc) => desc,
-        None => {
+    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.write(slice)) {
+        Ok(Ok(count)) => count as u64,
+        Ok(Err(_)) => ERR_BADF,
+        Err(ProcessError::InvalidFileDescriptor) => {
             klog!("[syscall] pid {} missing fd {}\n", current_pid, fd);
-            return ERR_BADF;
+            ERR_BADF
         }
-    };
-
-    write_via_descriptor(descriptor, slice)
-}
-
-fn write_via_descriptor(descriptor: FileDescriptor, slice: &[u8]) -> u64 {
-    match descriptor.write(slice) {
-        Ok(count) => count as u64,
-        Err(_) => ERR_BADF,
-    }
-}
-
-fn read_via_descriptor(descriptor: FileDescriptor, buf: &mut [u8]) -> u64 {
-    match descriptor.read(buf) {
-        Ok(count) => count as u64,
-        Err(_) => ERR_BADF,
+        Err(err) => {
+            klog!("[syscall] write failed pid {} fd {} err {:?}\n", current_pid, fd, err);
+            ERR_BADF
+        }
     }
 }
 

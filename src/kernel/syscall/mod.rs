@@ -16,6 +16,7 @@ pub mod fd {
     pub const STDIN: u64 = 0;
     pub const STDOUT: u64 = 1;
     pub const STDERR: u64 = 2;
+    pub const SCRATCH: u64 = 3;
 }
 
 #[cfg(not(target_arch = "x86_64"))]

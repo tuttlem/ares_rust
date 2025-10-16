@@ -4,11 +4,13 @@ use crate::drivers::{console, keyboard, CharDevice, DriverError};
 use crate::klog;
 use crate::mem::heap;
 use crate::sync::spinlock::SpinLock;
+use crate::vfs::{VfsError, VfsFile};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
 
 use core::alloc::Layout;
+use core::array;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::{ptr, slice};
 
@@ -17,6 +19,7 @@ pub type Pid = u32;
 pub const STDIN_FD: usize = 0;
 pub const STDOUT_FD: usize = 1;
 pub const STDERR_FD: usize = 2;
+pub const SCRATCH_FD: usize = 3;
 const MAX_FDS: usize = 16;
 const KERNEL_STACK_SIZE: usize = 16 * 1024;
 
@@ -119,27 +122,98 @@ extern "C" fn idle_task() -> ! {
     }
 }
 
-#[derive(Clone, Copy)]
 pub enum FileDescriptor {
     Char(&'static dyn CharDevice),
+    Vfs(VfsHandle),
+}
+
+pub struct VfsHandle {
+    file: &'static dyn VfsFile,
+    offset: u64,
+}
+
+impl VfsHandle {
+    pub fn new(file: &'static dyn VfsFile) -> Self {
+        Self { file, offset: 0 }
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, VfsError> {
+        let count = self.file.read_at(self.offset, buf)?;
+        self.offset = self.offset.saturating_add(count as u64);
+        Ok(count)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<usize, VfsError> {
+        let count = self.file.write_at(self.offset, buf)?;
+        self.offset = self.offset.saturating_add(count as u64);
+        Ok(count)
+    }
+
+    fn flush(&self) -> Result<(), VfsError> {
+        self.file.flush()
+    }
+
+    fn seek(&mut self, offset: u64) -> Result<(), VfsError> {
+        let size = self.file.size()?;
+        if offset > size {
+            return Err(VfsError::InvalidOffset);
+        }
+        self.offset = offset;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum FileIoError {
+    Driver(DriverError),
+    Vfs(VfsError),
+}
+
+impl From<DriverError> for FileIoError {
+    fn from(err: DriverError) -> Self {
+        FileIoError::Driver(err)
+    }
+}
+
+impl From<VfsError> for FileIoError {
+    fn from(err: VfsError) -> Self {
+        FileIoError::Vfs(err)
+    }
 }
 
 impl FileDescriptor {
     pub fn as_char(&self) -> Option<&'static dyn CharDevice> {
         match self {
             FileDescriptor::Char(device) => Some(*device),
+            FileDescriptor::Vfs(_) => None,
         }
     }
 
-    pub fn write(&self, buf: &[u8]) -> Result<usize, DriverError> {
+    pub fn write(&mut self, buf: &[u8]) -> Result<usize, FileIoError> {
         match self {
-            FileDescriptor::Char(device) => device.write(buf),
+            FileDescriptor::Char(device) => device.write(buf).map_err(FileIoError::from),
+            FileDescriptor::Vfs(handle) => handle.write(buf).map_err(FileIoError::from),
         }
     }
 
-    pub fn read(&self, buf: &mut [u8]) -> Result<usize, DriverError> {
+    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, FileIoError> {
         match self {
-            FileDescriptor::Char(device) => device.read(buf),
+            FileDescriptor::Char(device) => device.read(buf).map_err(FileIoError::from),
+            FileDescriptor::Vfs(handle) => handle.read(buf).map_err(FileIoError::from),
+        }
+    }
+
+    pub fn flush(&mut self) -> Result<(), FileIoError> {
+        match self {
+            FileDescriptor::Char(_) => Ok(()),
+            FileDescriptor::Vfs(handle) => handle.flush().map_err(FileIoError::from),
+        }
+    }
+
+    pub fn seek(&mut self, offset: u64) -> Result<(), FileIoError> {
+        match self {
+            FileDescriptor::Char(_) => Ok(()),
+            FileDescriptor::Vfs(handle) => handle.seek(offset).map_err(FileIoError::from),
         }
     }
 }
@@ -218,6 +292,8 @@ impl Process {
         context.rbp = aligned_top;
         context.rip = entry as u64;
 
+        let fds: [Option<FileDescriptor>; MAX_FDS] = array::from_fn(|_| None);
+
         let mut process = Self {
             pid,
             parent,
@@ -228,7 +304,7 @@ impl Process {
             is_idle,
             preempt_return: None,
             cpu_slices: 0,
-            fds: [None; MAX_FDS],
+            fds,
             context,
             stack_ptr,
             stack_layout: Some(layout),
@@ -241,6 +317,10 @@ impl Process {
 
         let keyboard_device = keyboard::driver();
         process.set_fd(STDIN_FD, FileDescriptor::Char(keyboard_device))?;
+
+        if let Some(file) = crate::vfs::ata::AtaScratchFile::get() {
+            process.set_fd(SCRATCH_FD, FileDescriptor::Vfs(VfsHandle::new(file)))?;
+        }
 
         process.regions.register(MemoryRegion {
             base: stack_ptr,
@@ -292,11 +372,12 @@ impl Process {
         Ok(())
     }
 
-    fn fd(&self, index: usize) -> Option<FileDescriptor> {
-        if index >= MAX_FDS {
-            return None;
-        }
-        self.fds[index]
+    fn fd(&self, index: usize) -> Option<&FileDescriptor> {
+        self.fds.get(index).and_then(|entry| entry.as_ref())
+    }
+
+    fn fd_mut(&mut self, index: usize) -> Option<&mut FileDescriptor> {
+        self.fds.get_mut(index).and_then(|entry| entry.as_mut())
     }
 
     fn allocate_region_with_permissions(
@@ -844,7 +925,7 @@ pub fn request_preempt(frame: &mut InterruptFrame) {
 
     const KERNEL_TOP_BITS: u64 = 0xFFFF;
     if (rip >> 48) != KERNEL_TOP_BITS {
-        let pid_for_log = current_pid().unwrap_or(0);
+        let _pid_for_log = current_pid().unwrap_or(0);
         /*
         klog!(
             "[request_preempt] non-canonical rip pid={} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
@@ -858,7 +939,7 @@ pub fn request_preempt(frame: &mut InterruptFrame) {
         unsafe {
             let raw = frame as *const InterruptFrame as *const u64;
             for i in 0..8 {
-                let word = core::ptr::read(raw.add(i));
+                let _word = core::ptr::read(raw.add(i));
                 //klog!("[request_preempt] stack[{i}] = 0x{:016X}\n", word);
             }
         }
@@ -1172,9 +1253,38 @@ pub fn set_current_pid(pid: Pid) {
     CURRENT_PID.store(pid, Ordering::Release);
 }
 
-pub fn descriptor(pid: Pid, fd: usize) -> Option<FileDescriptor> {
-    let table = PROCESS_TABLE.lock();
-    table.get(pid).and_then(|process| process.fd(fd))
+pub fn with_fd_mut<F, R>(pid: Pid, fd: usize, f: F) -> Result<R, ProcessError>
+where
+    F: FnOnce(&mut FileDescriptor) -> R,
+{
+    let mut descriptor = {
+        let mut table = PROCESS_TABLE.lock();
+        let process = table
+            .get_mut(pid)
+            .ok_or(ProcessError::ProcessNotFound)?;
+        let slot = process
+            .fds
+            .get_mut(fd)
+            .ok_or(ProcessError::InvalidFileDescriptor)?;
+        slot.take().ok_or(ProcessError::InvalidFileDescriptor)?
+    };
+
+    let result = f(&mut descriptor);
+
+    {
+        let mut table = PROCESS_TABLE.lock();
+        let process = table
+            .get_mut(pid)
+            .ok_or(ProcessError::ProcessNotFound)?;
+        let slot = process
+            .fds
+            .get_mut(fd)
+            .ok_or(ProcessError::InvalidFileDescriptor)?;
+        debug_assert!(slot.is_none(), "fd slot occupied during restore");
+        *slot = Some(descriptor);
+    }
+
+    Ok(result)
 }
 
 pub fn with_process_mut<F, R>(pid: Pid, f: F) -> Result<R, ProcessError>
@@ -1271,6 +1381,14 @@ fn dump_process_inner(process: &Process) {
             match descriptor {
                 FileDescriptor::Char(dev) => {
                     klog!("           fd {:>2}: CharDevice '{}'\n", fd, dev.name());
+                }
+                FileDescriptor::Vfs(handle) => {
+                    klog!(
+                        "           fd {:>2}: VfsFile '{}' offset={}\n",
+                        fd,
+                        handle.file.name(),
+                        handle.offset
+                    );
                 }
             }
         }

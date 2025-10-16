@@ -11,6 +11,7 @@ mod syscall;
 mod sync;
 mod timer;
 mod cpu;
+mod vfs;
 pub mod process;
 
 use core::alloc::Layout;
@@ -21,6 +22,8 @@ use core::ptr;
 use core::str;
 
 use crate::mem::heap::{self, HeapBox};
+use crate::vfs::ata::AtaScratchFile;
+use crate::vfs::VfsFile;
 
 #[no_mangle]
 pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> ! {
@@ -60,6 +63,14 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     drivers::register_builtin();
     drivers::list_drivers();
+    if let Some(ata_dev) = drivers::block_device_by_name("ata0-master") {
+        unsafe {
+            let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
+            klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+        }
+    } else {
+        klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
+    }
     drivers::self_test();
     process::init().expect("process init");
     syscall::init();
@@ -102,6 +113,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
     process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
     process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
+    process::spawn_kernel_process("vfs_smoke", vfs_smoke_task).expect("spawn vfs_smoke");
 
     interrupts::enable();
 
@@ -124,73 +136,7 @@ extern "C" fn init_shell_task() -> ! {
     }
 }
 
-pub fn test_ata_write_once() {
-    use crate::drivers::{BlockDevice, DriverKind};
-
-    let Some(dev) = crate::drivers::block_device_by_name("ata0-master") else {
-        klog!("[ata:test] device not found\n");
-        return;
-    };
-    if dev.kind() != DriverKind::Block {
-        klog!("[ata:test] not a block device\n");
-        return;
-    }
-
-    let sector = dev.block_size();
-    let lba: u64 = 2048; // safe-ish scratch area on blank disks; change to a known-safe LBA on your image
-    let mut write_buf = [0u8; 512];
-    let mut read_buf  = [0u8; 512];
-
-    // Fill with a recognizable pattern
-    // First 16 bytes are ASCII tag; remainder is incremental pattern.
-    let tag = b"0123456789";
-    let n = tag.len().min(sector);
-    write_buf[..n].copy_from_slice(&tag[..n]);
-    for (i, b) in write_buf[n..].iter_mut().enumerate() {
-        *b = (i as u8).wrapping_mul(3).wrapping_add(0x5A);
-    }
-
-    // ---- write ----
-    match dev.write_blocks(lba, &write_buf) {
-        Ok(()) => klog!("[ata:test] wrote {} bytes to LBA {}\n", sector, lba),
-        Err(e) => {
-            klog!("[ata:test] write failed: {:?}\n", e);
-            return;
-        }
-    }
-
-    // ---- read back ----
-    match dev.read_blocks(lba, &mut read_buf) {
-        Ok(()) => klog!("[ata:test] read {} bytes from LBA {}\n", sector, lba),
-        Err(e) => {
-            klog!("[ata:test] read failed: {:?}\n", e);
-            return;
-        }
-    }
-
-    // ---- verify ----
-    if write_buf == read_buf {
-        klog!("[ata:test] verify OK for LBA {}\n", lba);
-    } else {
-        // Find first mismatch for debugging
-        let mut first_diff = None;
-        for i in 0..sector {
-            if write_buf[i] != read_buf[i] {
-                first_diff = Some((i, write_buf[i], read_buf[i]));
-                break;
-            }
-        }
-        if let Some((i, w, r)) = first_diff {
-            klog!("[ata:test] verify FAIL at byte {}: wrote 0x{:02X}, read 0x{:02X}\n", i, w, r);
-        } else {
-            klog!("[ata:test] verify FAIL but buffers differ in unknown way (len {})\n", sector);
-        }
-    }
-}
-
-
 extern "C" fn ticker_task_a() -> ! {
-    test_ata_write_once();
     ticker_loop("A", b"[ticker-A] heartbeat\n")
 }
 
@@ -202,7 +148,13 @@ extern "C" fn ticker_task_c() -> ! {
     ticker_loop("C", b"[ticker-C] heartbeat\n")
 }
 
-fn ticker_loop(name: &'static str, stdout_msg: &'static [u8]) -> ! {
+extern "C" fn vfs_smoke_task() -> ! {
+    let ok = crate::vfs::tests::scratch_smoke_test();
+    let code = if ok { 0 } else { 1 };
+    syscall::exit(code);
+}
+
+fn ticker_loop(_name: &'static str, stdout_msg: &'static [u8]) -> ! {
     let mut counter: u64 = 0;
     loop {
         counter = counter.wrapping_add(1);
