@@ -229,6 +229,23 @@ impl BlockDevice for AtaPrimaryMaster {
         Ok(())
     }
 
+    fn flush(&self) -> Result<(), DriverError> {
+        unsafe {
+            outb(self.io_base() + REG_COMMAND, CMD_CACHE_FLUSH);
+        }
+
+        // Wait until BSY=0; ERR/DF clear
+        self.wait_until(0, 0, 200_000)?;
+
+        let st = unsafe { inb(self.io_base() + REG_STATUS) };
+
+        if st & (STATUS_ERR | STATUS_DF) != 0 {
+            return Err(DriverError::IoError);
+        }
+
+        Ok(())
+    }
+
     fn write_blocks(&self, lba: u64, buf: &[u8]) -> Result<(), DriverError> {
         if buf.len() % SECTOR_BYTES != 0 {
             return Err(DriverError::Unsupported);
@@ -251,6 +268,8 @@ impl BlockDevice for AtaPrimaryMaster {
         if st & (STATUS_ERR | STATUS_DF) != 0 {
             return Err(DriverError::IoError);
         }
+
+        self.flush()?;
 
         Ok(())
     }

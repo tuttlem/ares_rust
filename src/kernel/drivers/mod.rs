@@ -35,6 +35,10 @@ pub trait BlockDevice: Driver {
     fn block_size(&self) -> usize;
     fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> Result<(), DriverError>;
     fn write_blocks(&self, lba: u64, buf: &[u8]) -> Result<(), DriverError>;
+
+    fn flush(&self) -> Result<(), DriverError> {
+        Ok(())
+    }
 }
 
 pub trait CharDevice: Driver {

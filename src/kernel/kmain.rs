@@ -143,7 +143,7 @@ pub fn test_ata_write_once() {
 
     // Fill with a recognizable pattern
     // First 16 bytes are ASCII tag; remainder is incremental pattern.
-    let tag = b"ATA_TEST_SECTOR!";
+    let tag = b"0123456789";
     let n = tag.len().min(sector);
     write_buf[..n].copy_from_slice(&tag[..n]);
     for (i, b) in write_buf[n..].iter_mut().enumerate() {
