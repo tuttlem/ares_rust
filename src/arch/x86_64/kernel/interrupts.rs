@@ -78,15 +78,113 @@ pub struct InterruptFrame {
     pub user_ss: u64,
 }
 
-pub mod vectors {
-    pub const PIT: u8 = 32;
-    pub const KEYBOARD: u8 = 33;
-    pub const PAGE_FAULT: u8 = 14;
-    pub const GENERAL_PROTECTION: u8 = 13;
-    pub const INVALID_OPCODE: u8 = 6;
+
+pub mod irq {
+    pub const PIT:           u8 = 0;  // Timer
+    pub const KEYBOARD:      u8 = 1;
+    pub const CASCADE:       u8 = 2;  // Slave PIC cascade
+    pub const COM2:          u8 = 3;
+    pub const COM1:          u8 = 4;
+    pub const LPT2:          u8 = 5;
+    pub const FLOPPY:        u8 = 6;
+    pub const LPT1_SPURIOUS: u8 = 7;
+    pub const RTC:           u8 = 8;
+    pub const ACPI:          u8 = 9;
+    pub const IRQ10:         u8 = 10;
+    pub const IRQ11:         u8 = 11;
+    pub const MOUSE:         u8 = 12;
+    pub const FPU:           u8 = 13;
+    pub const PRIMARY_IDE:   u8 = 14;
+    pub const SECONDARY_IDE: u8 = 15;
 }
 
-const PIC_MASTER_OFFSET: u8 = 32;
+pub const PIC_MASTER_OFFSET: u8 = 0x20;
+pub const PIC_SLAVE_OFFSET:  u8 = 0x28;
+
+
+pub mod vectors {
+    use super::irq;
+
+    // -------- CPU Exceptions (0x00–0x1F) --------
+    pub const DIVIDE_ERROR:             u8 = 0;   // #DE
+    pub const DEBUG:                    u8 = 1;   // #DB
+    pub const NON_MASKABLE_INTERRUPT:   u8 = 2;   // NMI
+    pub const BREAKPOINT:               u8 = 3;   // #BP (INT3)
+    pub const OVERFLOW:                 u8 = 4;   // #OF (INTO)
+    pub const BOUND_RANGE_EXCEEDED:     u8 = 5;   // #BR
+    pub const INVALID_OPCODE:           u8 = 6;   // #UD
+    pub const DEVICE_NOT_AVAILABLE:     u8 = 7;   // #NM (x87 not available)
+    pub const DOUBLE_FAULT:             u8 = 8;   // #DF (errcode=0 always)
+    pub const COPROCESSOR_SEG_OVERRUN:  u8 = 9;   // obsolete
+    pub const INVALID_TSS:              u8 = 10;  // #TS
+    pub const SEGMENT_NOT_PRESENT:      u8 = 11;  // #NP
+    pub const STACK_SEGMENT_FAULT:      u8 = 12;  // #SS
+    pub const GENERAL_PROTECTION:       u8 = 13;  // #GP
+    pub const PAGE_FAULT:               u8 = 14;  // #PF (errcode bitfield)
+    // 15 reserved
+    pub const X87_FLOATING_POINT:       u8 = 16;  // #MF
+    pub const ALIGNMENT_CHECK:          u8 = 17;  // #AC (ring3 only unless AM=1)
+    pub const MACHINE_CHECK:            u8 = 18;  // #MC
+    pub const SIMD_FLOAT_EXCEPTION:     u8 = 19;  // #XM/#XF (SSE/SSE2)
+    pub const VIRTUALIZATION_EXCEPTION: u8 = 20;  // #VE (VT-x EPT)
+    pub const CONTROL_PROTECTION:       u8 = 21;  // #CP (CET/IBT/ENDBR)
+    // 22–31 reserved
+
+    pub const PIT:           u8 = super::PIC_MASTER_OFFSET + irq::PIT;
+    pub const KEYBOARD:      u8 = super::PIC_MASTER_OFFSET + irq::KEYBOARD;
+    pub const CASCADE:       u8 = super::PIC_MASTER_OFFSET + irq::CASCADE;
+    pub const COM2:          u8 = super::PIC_MASTER_OFFSET + irq::COM2;
+    pub const COM1:          u8 = super::PIC_MASTER_OFFSET + irq::COM1;
+    pub const LPT2:          u8 = super::PIC_MASTER_OFFSET + irq::LPT2;
+    pub const FLOPPY:        u8 = super::PIC_MASTER_OFFSET + irq::FLOPPY;
+    pub const LPT1_SPURIOUS: u8 = super::PIC_MASTER_OFFSET + irq::LPT1_SPURIOUS;
+    pub const RTC:           u8 = super::PIC_SLAVE_OFFSET + (irq::RTC - 8);
+    pub const ACPI:          u8 = super::PIC_SLAVE_OFFSET + (irq::ACPI - 8);
+    pub const IRQ10:         u8 = super::PIC_SLAVE_OFFSET + (irq::IRQ10 - 8);
+    pub const IRQ11:         u8 = super::PIC_SLAVE_OFFSET + (irq::IRQ11 - 8);
+    pub const MOUSE:         u8 = super::PIC_SLAVE_OFFSET + (irq::MOUSE - 8);
+    pub const FPU:           u8 = super::PIC_SLAVE_OFFSET + (irq::FPU - 8);
+    pub const PRIMARY_IDE:   u8 = super::PIC_SLAVE_OFFSET + (irq::PRIMARY_IDE - 8);
+    pub const SECONDARY_IDE: u8 = super::PIC_SLAVE_OFFSET + (irq::SECONDARY_IDE - 8);
+
+
+    // -------- OS-defined software interrupts --------
+    // Keep INT 0x80 for compatibility/testing even if you use SYSCALL/SYSRET.
+    pub const INT_SYSCALL:   u8 = 0x80;
+
+    // -------- IOAPIC/MSI general device range --------
+    // When you move to IOAPIC/MSI, give yourself a wide, tidy block
+    // for PCI/MSI/MSI-X devices to avoid clashing with exceptions and LAPIC.
+    // Common choice: 0x40–0xEF (you assign per-device at init).
+    pub const IOAPIC_BASE:   u8 = 0x40; // start of "external device" pool
+    // (no fixed constants here; allocate dynamically from this range)
+
+    // -------- Local APIC (per-CPU) vectors --------
+    // These are *chosen by you* when programming the LAPIC LVT entries.
+    // Carve out a top-of-space block so they never collide with IOAPIC/MSI.
+    pub const LAPIC_TIMER:   u8 = 0xF0; // LVT Timer
+    pub const LAPIC_THERMAL: u8 = 0xF1; // LVT Thermal Sensor (if supported)
+    pub const LAPIC_PERF:    u8 = 0xF2; // LVT Performance Monitoring
+    pub const LAPIC_LINT0:   u8 = 0xF3; // If you route ExtINT/NMI here (optional)
+    pub const LAPIC_LINT1:   u8 = 0xF4; // Often NMI source (if used)
+    pub const LAPIC_ERROR:   u8 = 0xFE; // LVT Error
+    pub const SPURIOUS:      u8 = 0xFF; // LAPIC Spurious Vector (APIC_SPIV)
+
+    // -------- Inter-Processor Interrupts (IPIs) --------
+    // Reserve a small block for SMP housekeeping:
+    pub const IPI_RESCHEDULE:    u8 = 0xF5; // scheduler poke
+    pub const IPI_TLB_SHOOTDOWN: u8 = 0xF6; // flush TLB on peers
+    pub const IPI_STOP_CPU:      u8 = 0xF7; // halt/park secondary CPUs
+    // (Send with ICR in LAPIC/x2APIC; these are just the vectors they arrive on)
+
+    // -------- Suggested policy (doc-only) --------
+    //  00–1F: CPU exceptions (fixed)
+    //  20–2F: Legacy PIC (if enabled)
+    //  30–3F: Free (you can keep this empty as a buffer)
+    //  40–EF: IOAPIC/MSI device pool (assign dynamically)
+    //  80    : INT 0x80 syscall (optional compat)
+    //  F0–FF: LAPIC + IPIs + spurious (per-CPU)
+}
 
 const IDT_ENTRIES: usize = 256;
 
@@ -250,6 +348,26 @@ fn general_protection_handler(frame: &mut InterruptFrame) {
     }
 }
 
+fn ata_primary_irq(frame: &mut InterruptFrame) {
+    use crate::process;
+    let pid = process::current_pid();
+
+    klog!(
+        "[ata] pid={:?} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X} rsp=0x{:016X} err=0x{:X}\n",
+        pid,
+        frame.rip,
+        frame.cs,
+        frame.rflags,
+        frame.rsp,
+        frame.err_code
+    );
+
+    unsafe {
+        use crate::arch::x86_64::io::inb;
+        let _status = inb(0x1F7); // clears the IRQ
+    }
+}
+
 fn invalid_opcode_handler(frame: &mut InterruptFrame) {
     use crate::process;
     use core::slice;
@@ -312,6 +430,8 @@ unsafe fn setup_idt() {
     register_handler(vectors::PAGE_FAULT, page_fault_handler);
     register_handler(vectors::GENERAL_PROTECTION, general_protection_handler);
     register_handler(vectors::INVALID_OPCODE, invalid_opcode_handler);
+
+    register_handler(vectors::PRIMARY_IDE, ata_primary_irq);
 
     for (i, handler) in irq_handlers.iter().enumerate() {
         let index = 32 + i;

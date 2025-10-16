@@ -100,7 +100,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     process::spawn_kernel_process("ticker_a", ticker_task_a).expect("spawn ticker_a");
     process::spawn_kernel_process("ticker_b", ticker_task_b).expect("spawn ticker_b");
     process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
-    // process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
+    process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
     process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
 
     interrupts::enable();
