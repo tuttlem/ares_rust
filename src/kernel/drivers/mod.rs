@@ -264,3 +264,15 @@ pub fn block_device_by_name(name: &str) -> Option<&'static dyn BlockDevice> {
     }
     None
 }
+
+pub fn char_device_by_name(name: &str) -> Option<&'static dyn CharDevice> {
+    let registry = REGISTRY.lock();
+    for slot in registry.iter() {
+        if let Some(dev) = slot.as_char() {
+            if dev.name() == name {
+                return Some(dev);
+            }
+        }
+    }
+    None
+}

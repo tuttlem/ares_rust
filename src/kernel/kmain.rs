@@ -141,53 +141,7 @@ extern "C" fn init_shell_task() -> ! {
 }
 
 extern "C" fn ticker_task_a() -> ! {
-    let fd = match syscall::open("/scratch") {
-        Ok(fd) => fd as u64,
-        Err(err) => {
-            klog!("[vfs] open failed: {:?}\n", err);
-            ticker_loop("A", b"[ticker-A] heartbeat\n");
-        }
-    };
-
-    let bytes_written = match syscall::write(fd, b"hello") {
-        Ok(written) => written,
-        Err(err) => {
-            klog!("[vfs] write failed: {:?}\n", err);
-            let _ = syscall::close(fd);
-            ticker_loop("A", b"[ticker-A] heartbeat\n");
-        }
-    };
-
-    if let Err(err) = syscall::seek(fd, 0) {
-        klog!("[vfs] seek failed: {:?}\n", err);
-        let _ = syscall::close(fd);
-        ticker_loop("A", b"[ticker-A] heartbeat\n");
-    }
-
-    let mut buf = [0u8; 5];
-    let bytes_read = match syscall::read(fd, &mut buf) {
-        Ok(read) => read,
-        Err(err) => {
-            klog!("[vfs] read failed: {:?}\n", err);
-            let _ = syscall::close(fd);
-            ticker_loop("A", b"[ticker-A] heartbeat\n");
-        }
-    };
-
-    if let Err(err) = syscall::close(fd) {
-        klog!("[vfs] close failed: {:?}\n", err);
-    }
-
-    let slice = &buf[..bytes_read.min(buf.len())];
-
-    if let Ok(s) = core::str::from_utf8(slice) {
-        klog!("[vfs] wrote {} bytes, read {} bytes, data was {}\n", bytes_written, bytes_read, s);
-    } else {
-        klog!("[vfs] wrote {} bytes, read {} bytes, data was {:02X?}\n", bytes_written, bytes_read, slice);
-    }
-
-
-
+    vfs_smoke_checks();
     ticker_loop("A", b"[ticker-A] heartbeat\n")
 }
 
@@ -283,6 +237,80 @@ extern "C" fn worker_task() -> ! {
             core::hint::spin_loop();
         }
         syscall::yield_now();
+    }
+}
+
+fn vfs_smoke_checks() {
+    // --- /dev/null ---
+    match syscall::open("/dev/null") {
+        Ok(fd) => {
+            let fd = fd as u64;
+            match syscall::write(fd, b"discard") {
+                Ok(written) => klog!("[vfs:smoke] /dev/null accepted {} bytes\n", written),
+                Err(err) => klog!("[vfs:smoke] /dev/null write failed: {:?}\n", err),
+            }
+            if let Err(err) = syscall::close(fd) {
+                klog!("[vfs:smoke] /dev/null close failed: {:?}\n", err);
+            }
+        }
+        Err(err) => klog!("[vfs:smoke] open /dev/null failed: {:?}\n", err),
+    }
+
+    // --- /dev/zero ---
+    match syscall::open("/dev/zero") {
+        Ok(fd) => {
+            let fd = fd as u64;
+            let mut buf = [0xAAu8; 16];
+            match syscall::read(fd, &mut buf) {
+                Ok(read) => {
+                    let mut all_zero = true;
+                    for byte in &buf[..read] {
+                        if *byte != 0 {
+                            all_zero = false;
+                            break;
+                        }
+                    }
+                    klog!(
+                        "[vfs:smoke] /dev/zero read {} bytes zeros={} data={:02X?}\n",
+                        read,
+                        all_zero,
+                        &buf[..read]
+                    );
+                }
+                Err(err) => klog!("[vfs:smoke] /dev/zero read failed: {:?}\n", err),
+            }
+            if let Err(err) = syscall::close(fd) {
+                klog!("[vfs:smoke] /dev/zero close failed: {:?}\n", err);
+            }
+        }
+        Err(err) => klog!("[vfs:smoke] open /dev/zero failed: {:?}\n", err),
+    }
+
+    // --- /scratch seek test ---
+    match syscall::open("/scratch") {
+        Ok(fd) => {
+            let fd = fd as u64;
+            let data = b"seektest";
+            if let Err(err) = syscall::write(fd, data) {
+                klog!("[vfs:smoke] /scratch write failed: {:?}\n", err);
+            } else if let Err(err) = syscall::seek(fd, 2, syscall::SeekWhence::Set) {
+                klog!("[vfs:smoke] /scratch seek failed: {:?}\n", err);
+            } else {
+                let mut buf = [0u8; 6];
+                match syscall::read(fd, &mut buf) {
+                    Ok(read) => klog!(
+                        "[vfs:smoke] /scratch read {} bytes -> {:?}\n",
+                        read,
+                        &buf[..read]
+                    ),
+                    Err(err) => klog!("[vfs:smoke] /scratch read failed: {:?}\n", err),
+                }
+            }
+            if let Err(err) = syscall::close(fd) {
+                klog!("[vfs:smoke] /scratch close failed: {:?}\n", err);
+            }
+        }
+        Err(err) => klog!("[vfs:smoke] open /scratch failed: {:?}\n", err),
     }
 }
 

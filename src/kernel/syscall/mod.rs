@@ -5,6 +5,8 @@ pub use crate::arch::x86_64::kernel::syscall::*;
 #[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
 pub use crate::arch::x86_64::kernel::syscall::{SysError, SysResult};
+#[cfg(target_arch = "x86_64")]
+pub use crate::arch::x86_64::kernel::syscall::SeekWhence;
 
 #[cfg(not(target_arch = "x86_64"))]
 pub mod nr {
@@ -41,6 +43,14 @@ pub enum SysError {
 pub type SysResult<T> = Result<T, SysError>;
 
 #[cfg(not(target_arch = "x86_64"))]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum SeekWhence {
+    Set,
+    Cur,
+    End,
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub fn init() {}
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -64,7 +74,7 @@ pub fn close(_fd: u64) -> SysResult<()> {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn seek(_fd: u64, _offset: u64) -> SysResult<u64> {
+pub fn seek(_fd: u64, _offset: i64, _whence: SeekWhence) -> SysResult<u64> {
     Ok(0)
 }
 

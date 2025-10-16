@@ -25,6 +25,13 @@ const KERNEL_STACK_SIZE: usize = 16 * 1024;
 
 type ProcessEntry = extern "C" fn() -> !;
 
+#[derive(Debug, Copy, Clone)]
+pub enum SeekFrom {
+    Start(u64),
+    Current(i64),
+    End(i64),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryRegionKind {
     Stack,
@@ -153,13 +160,32 @@ impl VfsHandle {
         self.file.flush()
     }
 
-    fn seek(&mut self, offset: u64) -> Result<(), VfsError> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64, VfsError> {
         let size = self.file.size()?;
-        if offset > size {
+        let new_offset = match pos {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::Current(delta) => {
+                let base = self.offset as i128 + delta as i128;
+                if base < 0 {
+                    return Err(VfsError::InvalidOffset);
+                }
+                base as u64
+            }
+            SeekFrom::End(delta) => {
+                let base = size as i128 + delta as i128;
+                if base < 0 {
+                    return Err(VfsError::InvalidOffset);
+                }
+                base as u64
+            }
+        };
+
+        if new_offset > size {
             return Err(VfsError::InvalidOffset);
         }
-        self.offset = offset;
-        Ok(())
+
+        self.offset = new_offset;
+        Ok(new_offset)
     }
 }
 
@@ -210,10 +236,10 @@ impl FileDescriptor {
         }
     }
 
-    pub fn seek(&mut self, offset: u64) -> Result<(), FileIoError> {
+    pub fn seek(&mut self, pos: SeekFrom) -> Result<u64, FileIoError> {
         match self {
-            FileDescriptor::Char(_) => Ok(()),
-            FileDescriptor::Vfs(handle) => handle.seek(offset).map_err(FileIoError::from),
+            FileDescriptor::Char(_) => Err(FileIoError::Driver(DriverError::Unsupported)),
+            FileDescriptor::Vfs(handle) => handle.seek(pos).map_err(FileIoError::from),
         }
     }
 }
@@ -1281,6 +1307,14 @@ pub fn open_path(pid: Pid, path: &str) -> Result<usize, ProcessError> {
             FileDescriptor::Vfs(VfsHandle::new(file))
         }
         "/dev/console" => FileDescriptor::Char(console::driver()),
+        "/dev/null" => {
+            let dev = crate::drivers::char_device_by_name("null").ok_or(ProcessError::PathNotFound)?;
+            FileDescriptor::Char(dev)
+        }
+        "/dev/zero" => {
+            let dev = crate::drivers::char_device_by_name("zero").ok_or(ProcessError::PathNotFound)?;
+            FileDescriptor::Char(dev)
+        }
         _ => return Err(ProcessError::PathNotFound),
     };
 

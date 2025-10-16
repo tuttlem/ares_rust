@@ -3,7 +3,7 @@
 use crate::drivers::DriverError;
 use crate::klog;
 use crate::process;
-use crate::process::{FileIoError, ProcessError};
+use crate::process::{FileIoError, ProcessError, SeekFrom};
 use crate::vfs::VfsError;
 use core::{slice, str};
 use super::msr;
@@ -23,6 +23,23 @@ pub mod fd {
     pub const STDOUT: u64 = 1;
     pub const STDERR: u64 = 2;
     pub const SCRATCH: u64 = 3;
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum SeekWhence {
+    Set,
+    Cur,
+    End,
+}
+
+impl SeekWhence {
+    fn as_raw(self) -> u64 {
+        match self {
+            SeekWhence::Set => 0,
+            SeekWhence::Cur => 1,
+            SeekWhence::End => 2,
+        }
+    }
 }
 
 const ERR_BADF: u64 = u64::MAX - 0;
@@ -123,13 +140,27 @@ fn encode_error(err: SysError) -> u64 {
     }
 }
 
+fn decode_seek(offset: u64, whence: u64) -> SysResult<SeekFrom> {
+    match whence {
+        0 => {
+            if (offset as i64) < 0 {
+                Err(SysError::InvalidArgument)
+            } else {
+                Ok(SeekFrom::Start(offset))
+            }
+        }
+        1 => Ok(SeekFrom::Current(offset as i64)),
+        2 => Ok(SeekFrom::End(offset as i64)),
+        _ => Err(SysError::InvalidArgument),
+    }
+}
+
 fn map_file_io_error(err: FileIoError) -> SysError {
     match err {
         FileIoError::Driver(DriverError::Unsupported) => SysError::InvalidArgument,
         FileIoError::Driver(DriverError::IoError) => SysError::Io,
         FileIoError::Driver(DriverError::RegistryFull) => SysError::NoMemory,
         FileIoError::Driver(DriverError::InitFailed) => SysError::Io,
-        FileIoError::Driver(_) => SysError::Io,
         FileIoError::Vfs(VfsError::Unsupported) => SysError::InvalidArgument,
         FileIoError::Vfs(VfsError::InvalidOffset) => SysError::InvalidArgument,
         FileIoError::Vfs(VfsError::Io) => SysError::Io,
@@ -185,20 +216,27 @@ fn sys_close(fd: u64) -> u64 {
 }
 
 fn sys_seek(fd: u64, offset: u64, whence: u64) -> u64 {
-    if whence != 0 {
-        return ERR_INVAL;
-    }
-
     let current_pid = match process::current_pid() {
         Some(pid) => pid,
         None => return ERR_BADF,
     };
 
-    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.seek(offset)) {
-        Ok(Ok(())) => offset,
+    let seek_from = match decode_seek(offset, whence) {
+        Ok(seek) => seek,
+        Err(err) => return encode_error(err),
+    };
+
+    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.seek(seek_from)) {
+        Ok(Ok(new_offset)) => new_offset,
         Ok(Err(err)) => {
             let sys_err = map_file_io_error(err);
-            klog!("[syscall] seek: device error {:?} (fd={} offset={})\n", sys_err, fd, offset);
+            klog!(
+                "[syscall] seek: device error {:?} (fd={} offset={} whence={})\n",
+                sys_err,
+                fd,
+                offset,
+                whence
+            );
             encode_error(sys_err)
         }
         Err(ProcessError::InvalidFileDescriptor) => encode_error(SysError::BadFileDescriptor),
@@ -231,11 +269,7 @@ fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
 
     match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.read(buffer)) {
         Ok(Ok(count)) => count as u64,
-        Ok(Err(err)) => {
-            let sys_err = map_file_io_error(err);
-            klog!("[syscall] read: device error {:?} (fd={} len={})\n", sys_err, fd, len);
-            encode_error(sys_err)
-        }
+        Ok(Err(err)) => encode_error(map_file_io_error(err)),
         Err(ProcessError::InvalidFileDescriptor) => encode_error(SysError::BadFileDescriptor),
         Err(err) => {
             klog!("[syscall] read failed pid {} fd {} err {:?}\n", current_pid, fd, err);
@@ -266,11 +300,7 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
 
     match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.write(slice)) {
         Ok(Ok(count)) => count as u64,
-        Ok(Err(err)) => {
-            let sys_err = map_file_io_error(err);
-            klog!("[syscall] write: device error {:?} (fd={} len={})\n", sys_err, fd, len);
-            encode_error(sys_err)
-        }
+        Ok(Err(err)) => encode_error(map_file_io_error(err)),
         Err(ProcessError::InvalidFileDescriptor) => encode_error(SysError::BadFileDescriptor),
         Err(err) => {
             klog!("[syscall] write failed pid {} fd {} err {:?}\n", current_pid, fd, err);
@@ -323,12 +353,12 @@ pub fn close(fd: u64) -> SysResult<()> {
     decode_ret(dispatch(&mut frame)).map(|_| ())
 }
 
-pub fn seek(fd: u64, offset: u64) -> SysResult<u64> {
+pub fn seek(fd: u64, offset: i64, whence: SeekWhence) -> SysResult<u64> {
     let mut frame = SyscallFrame::empty();
     frame.rax = nr::SEEK;
     frame.rdi = fd;
-    frame.rsi = offset;
-    frame.rdx = 0; // SEEK_SET
+    frame.rsi = offset as u64;
+    frame.rdx = whence.as_raw();
     decode_ret(dispatch(&mut frame))
 }
 
