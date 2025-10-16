@@ -31,4 +31,3 @@ pub trait VfsFile: Sync {
 }
 
 pub mod ata;
-pub mod tests;

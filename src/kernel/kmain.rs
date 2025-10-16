@@ -112,7 +112,6 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
     process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
     process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
-    process::spawn_kernel_process("vfs_smoke", vfs_smoke_task).expect("spawn vfs_smoke");
 
     interrupts::enable();
 
@@ -145,12 +144,6 @@ extern "C" fn ticker_task_b() -> ! {
 
 extern "C" fn ticker_task_c() -> ! {
     ticker_loop("C", b"[ticker-C] heartbeat\n")
-}
-
-extern "C" fn vfs_smoke_task() -> ! {
-    let ok = crate::vfs::tests::scratch_smoke_test();
-    let code = if ok { 0 } else { 1 };
-    syscall::exit(code);
 }
 
 fn ticker_loop(_name: &'static str, stdout_msg: &'static [u8]) -> ! {

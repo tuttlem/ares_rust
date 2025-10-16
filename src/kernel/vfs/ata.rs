@@ -1,5 +1,4 @@
 use crate::drivers::BlockDevice;
-use crate::klog;
 
 use super::{VfsError, VfsFile, VfsResult};
 
@@ -90,26 +89,15 @@ impl VfsFile for AtaScratchFile {
         }
 
         let mut sector = [0u8; SCRATCH_BYTES];
-        if let Err(err) = self
-            .device
+        self.device
             .read_blocks(self.lba, &mut sector[..sector_size])
-        {
-            klog!("[vfs:ata] read_blocks failed before write: {:?}\n", err);
-            return Err(err.into());
-        }
+            .map_err(VfsError::from)?;
 
         sector[start..start + buf.len()].copy_from_slice(buf);
-        if let Err(err) = self
-            .device
+        self.device
             .write_blocks(self.lba, &sector[..sector_size])
-        {
-            klog!("[vfs:ata] write_blocks failed: {:?}\n", err);
-            return Err(err.into());
-        }
-        if let Err(err) = self.device.flush() {
-            klog!("[vfs:ata] flush failed: {:?}\n", err);
-            return Err(err.into());
-        }
+            .map_err(VfsError::from)?;
+        self.device.flush().map_err(VfsError::from)?;
         Ok(buf.len())
     }
 
