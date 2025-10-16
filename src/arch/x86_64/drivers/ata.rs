@@ -4,7 +4,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use crate::drivers::{BlockDevice, Driver, DriverError, DriverKind};
 use crate::klog;
 
-use super::super::io::{inb, insw, outb};
+use super::super::io::{inb, insw, outb, outsw};
 
 const PRIMARY_IO_BASE: u16 = 0x1F0;
 const PRIMARY_CTRL_BASE: u16 = 0x3F6;
@@ -23,15 +23,17 @@ const REG_STATUS: u16 = REG_COMMAND;
 const REG_ALTSTATUS: u16 = 0x00;
 const REG_DEVICE_CONTROL: u16 = 0x00;
 
-const STATUS_ERR: u8 = 1 << 0;
-const STATUS_DRQ: u8 = 1 << 3;
-const STATUS_SRV: u8 = 1 << 4;
-const STATUS_DF: u8 = 1 << 5;
-const STATUS_RDY: u8 = 1 << 6;
-const STATUS_BSY: u8 = 1 << 7;
+const STATUS_ERR: u8    = 1 << 0;
+const STATUS_DRQ: u8    = 1 << 3;
+const STATUS_SRV: u8    = 1 << 4;
+const STATUS_DF: u8     = 1 << 5;
+const STATUS_RDY: u8    = 1 << 6;
+const STATUS_BSY: u8    = 1 << 7;
 
-const CMD_IDENTIFY: u8 = 0xEC;
-const CMD_READ_SECTORS: u8 = 0x20;
+const CMD_IDENTIFY: u8      = 0xEC;
+const CMD_READ_SECTORS: u8  = 0x20;
+const CMD_WRITE_SECTORS: u8 = 0x30;
+const CMD_CACHE_FLUSH: u8   = 0xE7;
 
 const SECTOR_BYTES: usize = 512;
 
@@ -140,6 +142,45 @@ impl AtaPrimaryMaster {
         compiler_fence(Ordering::SeqCst);
         Ok(())
     }
+
+    fn pio_write_sector(&self, lba: u64, buffer: &[u8; SECTOR_BYTES]) -> Result<(), DriverError> {
+        // Program drive & taskfile
+        self.select_drive(lba);
+        self.wait_400ns();
+
+        unsafe {
+            // Enable IRQs on device, clear SRST
+            outb(self.ctrl_base() + REG_DEVICE_CONTROL, 0);
+
+            outb(self.io_base() + REG_SECCOUNT0, 1);
+            outb(self.io_base() + REG_LBA0,  (lba & 0xFF) as u8);
+            outb(self.io_base() + REG_LBA1, ((lba >> 8)  & 0xFF) as u8);
+            outb(self.io_base() + REG_LBA2, ((lba >> 16) & 0xFF) as u8);
+            outb(self.io_base() + REG_COMMAND, CMD_WRITE_SECTORS);
+        }
+
+        // Device should become ready to accept data
+        // Wait: BSY=0 and DRQ=1; bail if ERR/DF
+        self.wait_until(STATUS_DRQ, STATUS_DRQ, 100_000)?;
+
+        // Push 512 bytes (256 words) to the data port
+        unsafe {
+            let ptr = buffer.as_ptr() as *const u16;
+            outsw(self.io_base() + REG_DATA, ptr, SECTOR_BYTES / 2);
+        }
+        compiler_fence(Ordering::SeqCst);
+
+        // Finalize: wait for BSY=0 and DRQ=0 (transfer complete)
+        self.wait_until(STATUS_DRQ, 0, 100_000)?;
+        // Check for error bits one last time
+        let st = unsafe { inb(self.io_base() + REG_STATUS) };
+        if st & (STATUS_ERR | STATUS_DF) != 0 {
+            return Err(DriverError::IoError);
+        }
+
+        Ok(())
+    }
+
 }
 
 impl Driver for AtaPrimaryMaster {
@@ -188,9 +229,32 @@ impl BlockDevice for AtaPrimaryMaster {
         Ok(())
     }
 
-    fn write_blocks(&self, _lba: u64, _buf: &[u8]) -> Result<(), DriverError> {
-        Err(DriverError::Unsupported)
+    fn write_blocks(&self, lba: u64, buf: &[u8]) -> Result<(), DriverError> {
+        if buf.len() % SECTOR_BYTES != 0 {
+            return Err(DriverError::Unsupported);
+        }
+        let sectors = buf.len() / SECTOR_BYTES;
+        if sectors == 0 { return Ok(()); }
+
+        for (i, chunk) in buf.chunks(SECTOR_BYTES).enumerate() {
+            // SAFETY: chunk is exactly 512 bytes
+            let mut sector = [0u8; SECTOR_BYTES];
+            sector.copy_from_slice(chunk);
+            self.pio_write_sector(lba + i as u64, &sector)?;
+        }
+
+        // Optional but recommended: flush device cache
+        unsafe { outb(self.io_base() + REG_COMMAND, CMD_CACHE_FLUSH); }
+        // Poll for completion of FLUSH (BSY=0, ERR/DF clear)
+        self.wait_until(0, 0, 100_000)?;
+        let st = unsafe { inb(self.io_base() + REG_STATUS) };
+        if st & (STATUS_ERR | STATUS_DF) != 0 {
+            return Err(DriverError::IoError);
+        }
+
+        Ok(())
     }
+
 }
 
 pub fn driver() -> &'static AtaPrimaryMaster {

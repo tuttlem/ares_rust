@@ -124,7 +124,73 @@ extern "C" fn init_shell_task() -> ! {
     }
 }
 
+pub fn test_ata_write_once() {
+    use crate::drivers::{BlockDevice, DriverKind};
+
+    let Some(dev) = crate::drivers::block_device_by_name("ata0-master") else {
+        klog!("[ata:test] device not found\n");
+        return;
+    };
+    if dev.kind() != DriverKind::Block {
+        klog!("[ata:test] not a block device\n");
+        return;
+    }
+
+    let sector = dev.block_size();
+    let lba: u64 = 2048; // safe-ish scratch area on blank disks; change to a known-safe LBA on your image
+    let mut write_buf = [0u8; 512];
+    let mut read_buf  = [0u8; 512];
+
+    // Fill with a recognizable pattern
+    // First 16 bytes are ASCII tag; remainder is incremental pattern.
+    let tag = b"ATA_TEST_SECTOR!";
+    let n = tag.len().min(sector);
+    write_buf[..n].copy_from_slice(&tag[..n]);
+    for (i, b) in write_buf[n..].iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(3).wrapping_add(0x5A);
+    }
+
+    // ---- write ----
+    match dev.write_blocks(lba, &write_buf) {
+        Ok(()) => klog!("[ata:test] wrote {} bytes to LBA {}\n", sector, lba),
+        Err(e) => {
+            klog!("[ata:test] write failed: {:?}\n", e);
+            return;
+        }
+    }
+
+    // ---- read back ----
+    match dev.read_blocks(lba, &mut read_buf) {
+        Ok(()) => klog!("[ata:test] read {} bytes from LBA {}\n", sector, lba),
+        Err(e) => {
+            klog!("[ata:test] read failed: {:?}\n", e);
+            return;
+        }
+    }
+
+    // ---- verify ----
+    if write_buf == read_buf {
+        klog!("[ata:test] verify OK for LBA {}\n", lba);
+    } else {
+        // Find first mismatch for debugging
+        let mut first_diff = None;
+        for i in 0..sector {
+            if write_buf[i] != read_buf[i] {
+                first_diff = Some((i, write_buf[i], read_buf[i]));
+                break;
+            }
+        }
+        if let Some((i, w, r)) = first_diff {
+            klog!("[ata:test] verify FAIL at byte {}: wrote 0x{:02X}, read 0x{:02X}\n", i, w, r);
+        } else {
+            klog!("[ata:test] verify FAIL but buffers differ in unknown way (len {})\n", sector);
+        }
+    }
+}
+
+
 extern "C" fn ticker_task_a() -> ! {
+    test_ata_write_once();
     ticker_loop("A", b"[ticker-A] heartbeat\n")
 }
 
