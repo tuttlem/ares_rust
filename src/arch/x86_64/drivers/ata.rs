@@ -260,15 +260,6 @@ impl BlockDevice for AtaPrimaryMaster {
             self.pio_write_sector(lba + i as u64, &sector)?;
         }
 
-        // Optional but recommended: flush device cache
-        unsafe { outb(self.io_base() + REG_COMMAND, CMD_CACHE_FLUSH); }
-        // Poll for completion of FLUSH (BSY=0, ERR/DF clear)
-        self.wait_until(0, 0, 100_000)?;
-        let st = unsafe { inb(self.io_base() + REG_STATUS) };
-        if st & (STATUS_ERR | STATUS_DF) != 0 {
-            return Err(DriverError::IoError);
-        }
-
         self.flush()?;
 
         Ok(())
