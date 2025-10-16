@@ -372,6 +372,25 @@ impl Process {
         Ok(())
     }
 
+    fn allocate_fd_slot(&mut self, descriptor: FileDescriptor) -> Result<usize, ProcessError> {
+        for (index, slot) in self.fds.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(descriptor);
+                return Ok(index);
+            }
+        }
+        Err(ProcessError::NoFreeFileDescriptors)
+    }
+
+    fn release_fd_slot(&mut self, index: usize) -> Result<FileDescriptor, ProcessError> {
+        if index >= MAX_FDS {
+            return Err(ProcessError::InvalidFileDescriptor);
+        }
+        self.fds[index]
+            .take()
+            .ok_or(ProcessError::InvalidFileDescriptor)
+    }
+
     fn fd(&self, index: usize) -> Option<&FileDescriptor> {
         self.fds.get(index).and_then(|entry| entry.as_ref())
     }
@@ -442,12 +461,14 @@ pub enum ProcessError {
     TooManyProcesses,
     InvalidFileDescriptor,
     ProcessNotFound,
+    PathNotFound,
     StackAllocationFailed,
     NotInitialized,
     MemoryRegionNotFound,
     IdleAlreadyExists,
     NoChildren,
     ChildNotFound,
+    NoFreeFileDescriptors,
 }
 
 struct MemoryRegionList {
@@ -1251,6 +1272,39 @@ pub fn current_pid() -> Option<Pid> {
 
 pub fn set_current_pid(pid: Pid) {
     CURRENT_PID.store(pid, Ordering::Release);
+}
+
+pub fn open_path(pid: Pid, path: &str) -> Result<usize, ProcessError> {
+    let descriptor = match path {
+        "/scratch" => {
+            let file = crate::vfs::ata::AtaScratchFile::get().ok_or(ProcessError::PathNotFound)?;
+            FileDescriptor::Vfs(VfsHandle::new(file))
+        }
+        "/dev/console" => FileDescriptor::Char(console::driver()),
+        _ => return Err(ProcessError::PathNotFound),
+    };
+
+    let mut table = PROCESS_TABLE.lock();
+    let process = table
+        .get_mut(pid)
+        .ok_or(ProcessError::ProcessNotFound)?;
+    process.allocate_fd_slot(descriptor)
+}
+
+pub fn close_fd(pid: Pid, fd: usize) -> Result<(), ProcessError> {
+    let descriptor = {
+        let mut table = PROCESS_TABLE.lock();
+        let process = table
+            .get_mut(pid)
+            .ok_or(ProcessError::ProcessNotFound)?;
+        process.release_fd_slot(fd)?
+    };
+
+    let mut descriptor = descriptor;
+    if let Err(err) = descriptor.flush() {
+        klog!("[process] flush on close failed: {:?}\n", err);
+    }
+    Ok(())
 }
 
 pub fn with_fd_mut<F, R>(pid: Pid, fd: usize, f: F) -> Result<R, ProcessError>

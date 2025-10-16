@@ -26,10 +26,6 @@ impl AtaScratchFile {
         unsafe { SCRATCH_FILE.as_ref() }
     }
 
-    pub fn bytes_per_sector(&self) -> usize {
-        self.sector_size()
-    }
-
     fn sector_size(&self) -> usize {
         self.device.block_size()
     }
@@ -59,7 +55,10 @@ impl VfsFile for AtaScratchFile {
         }
 
         let start = offset as usize;
-        if start + buf.len() > sector_size {
+        let end = start
+            .checked_add(buf.len())
+            .ok_or(VfsError::Unsupported)?;
+        if end > sector_size {
             return Err(VfsError::Unsupported);
         }
 
@@ -68,7 +67,7 @@ impl VfsFile for AtaScratchFile {
             .read_blocks(self.lba, &mut sector[..sector_size])
             .map_err(VfsError::from)?;
 
-        buf.copy_from_slice(&sector[start..start + buf.len()]);
+        buf.copy_from_slice(&sector[start..end]);
         Ok(buf.len())
     }
 
@@ -84,7 +83,10 @@ impl VfsFile for AtaScratchFile {
         }
 
         let start = offset as usize;
-        if start + buf.len() > sector_size {
+        let end = start
+            .checked_add(buf.len())
+            .ok_or(VfsError::Unsupported)?;
+        if end > sector_size {
             return Err(VfsError::Unsupported);
         }
 
@@ -93,7 +95,7 @@ impl VfsFile for AtaScratchFile {
             .read_blocks(self.lba, &mut sector[..sector_size])
             .map_err(VfsError::from)?;
 
-        sector[start..start + buf.len()].copy_from_slice(buf);
+        sector[start..end].copy_from_slice(buf);
         self.device
             .write_blocks(self.lba, &sector[..sector_size])
             .map_err(VfsError::from)?;

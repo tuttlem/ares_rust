@@ -52,13 +52,13 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
         unsafe { cpu::enable_sse(); }
-        klog::writeln("[kmain] SSE/SSE2 enabled");
+        klog::writeln("[kmain] SSE/SSE2 enabled\n");
     } else {
-        klog::writeln("[kmain] SSE/SSE2 unavailable");
+        klog::writeln("[kmain] SSE/SSE2 unavailable\n");
     }
 
     if features.has_ecx(cpu::feature::ecx::AVX) {
-        klog::writeln("[kmain] AVX supported");
+        klog::writeln("[kmain] AVX supported\n");
     }
 
     drivers::register_builtin();
@@ -83,12 +83,10 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
             *slot = i as u64;
         }
         let sum: u64 = boxed.iter().copied().sum();
-        klog!("[heap] array sum={} first={} last={}
-", sum, boxed[0], boxed[7]);
+        klog!("[heap] array sum={} first={} last={}\n", sum, boxed[0], boxed[7]);
     }
     let after = heap::remaining_bytes();
-    klog!("[heap] remaining before={} after={}
-", before, after);
+    klog!("[heap] remaining before={} after={}\n", before, after);
 
     unsafe {
         let layout = Layout::from_size_align(64, 16).unwrap();
@@ -96,11 +94,9 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         if !ptr.is_null() {
             ptr::write_bytes(ptr, 0xA5, 64);
             heap::deallocate(ptr, layout);
-            klog!("[heap] manual alloc/free ok
-");
+            klog!("[heap] manual alloc/free ok\n");
         } else {
-            klog!("[heap] manual allocation failed
-");
+            klog!("[heap] manual allocation failed\n");
         }
     }
 
@@ -121,20 +117,77 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 extern "C" fn init_shell_task() -> ! {
     let mut input_buf = [0u8; 64];
     loop {
-        let count = syscall::read(syscall::fd::STDIN, &mut input_buf);
+        let count = match syscall::read(syscall::fd::STDIN, &mut input_buf) {
+            Ok(count) => count,
+            Err(err) => {
+                klog!("[shell] read error: {:?}\n", err);
+                process::yield_now();
+                continue;
+            }
+        };
+
         if count == 0 {
             process::yield_now();
             continue;
         }
-        if count <= input_buf.len() as u64 {
-            let slice = &input_buf[..count as usize];
-            let _ = syscall::write(syscall::fd::STDOUT, slice);
+        if count <= input_buf.len() {
+            let slice = &input_buf[..count];
+            if let Err(err) = syscall::write(syscall::fd::STDOUT, slice) {
+                klog!("[shell] write error: {:?}\n", err);
+            }
         }
         process::yield_now();
     }
 }
 
 extern "C" fn ticker_task_a() -> ! {
+    let fd = match syscall::open("/scratch") {
+        Ok(fd) => fd as u64,
+        Err(err) => {
+            klog!("[vfs] open failed: {:?}\n", err);
+            ticker_loop("A", b"[ticker-A] heartbeat\n");
+        }
+    };
+
+    let bytes_written = match syscall::write(fd, b"hello") {
+        Ok(written) => written,
+        Err(err) => {
+            klog!("[vfs] write failed: {:?}\n", err);
+            let _ = syscall::close(fd);
+            ticker_loop("A", b"[ticker-A] heartbeat\n");
+        }
+    };
+
+    if let Err(err) = syscall::seek(fd, 0) {
+        klog!("[vfs] seek failed: {:?}\n", err);
+        let _ = syscall::close(fd);
+        ticker_loop("A", b"[ticker-A] heartbeat\n");
+    }
+
+    let mut buf = [0u8; 5];
+    let bytes_read = match syscall::read(fd, &mut buf) {
+        Ok(read) => read,
+        Err(err) => {
+            klog!("[vfs] read failed: {:?}\n", err);
+            let _ = syscall::close(fd);
+            ticker_loop("A", b"[ticker-A] heartbeat\n");
+        }
+    };
+
+    if let Err(err) = syscall::close(fd) {
+        klog!("[vfs] close failed: {:?}\n", err);
+    }
+
+    let slice = &buf[..bytes_read.min(buf.len())];
+
+    if let Ok(s) = core::str::from_utf8(slice) {
+        klog!("[vfs] wrote {} bytes, read {} bytes, data was {}\n", bytes_written, bytes_read, s);
+    } else {
+        klog!("[vfs] wrote {} bytes, read {} bytes, data was {:02X?}\n", bytes_written, bytes_read, slice);
+    }
+
+
+
     ticker_loop("A", b"[ticker-A] heartbeat\n")
 }
 
