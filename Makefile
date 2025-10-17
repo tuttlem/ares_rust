@@ -37,7 +37,7 @@ arch_kernel_asm_object_files  := $(patsubst $(arch_kernel_source_dir)/%.asm, $(a
 
 arch_kernel_object_files      := $(arch_kernel_asm_object_files)
 
-.PHONY: build-x86_64 test-kernel run-tests
+.PHONY: build-x86_64 test-kernel test qemu-test
 
 all: build-x86_64
 
@@ -78,9 +78,12 @@ test-kernel: OUTPUT_BIN = dist/x86_64/kernel-test.bin
 test-kernel: OUTPUT_ISO = $(TEST_ISO)
 test-kernel: build-x86_64
 
-run-tests: test-kernel
+test:
+	cargo test -p ares-core
+
+qemu-test: test-kernel
 	qemu-system-x86_64 -cdrom $(TEST_ISO) \
 						 -device isa-debug-exit,iobase=0xf4,iosize=0x01 \
 						 -serial stdio \
 						 -display none \
-						 -no-reboot
+						 -no-reboot || test $$? -eq 1
