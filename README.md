@@ -27,8 +27,9 @@ src/
  │       ├── io/                  # Shared port I/O helpers (inb/outb)
  │       └── kernel/              # Interrupts, PIT, syscall trampolines, context switch
  └── kernel/
-     ├── drivers/                 # Driver registry and architecture-neutral facades
-     ├── process/                 # Process table, scheduler, descriptors, memory regions
+    ├── drivers/                 # Driver registry and architecture-neutral facades
+    ├── fs/                      # Filesystem modules (FAT, future drivers) plugged into the VFS
+    ├── process/                 # Process table, scheduler, descriptors, memory regions
      ├── mem/                     # Kernel heap allocator and physical memory parsing
      ├── syscall/                 # High-level syscall facade
      ├── timer/, cpu/, sync/      # Supporting subsystems
@@ -64,6 +65,12 @@ src/
 - The keyboard driver translates set-1 scancodes, maintains a ring buffer, and feeds interrupts into the syscall layer.
 - A shared `io` module centralises `inb`/`outb`, removing duplicated inline assembly across PIT, PIC, console, serial, and keyboard code.
 
+### Virtual File System & FAT support
+
+- The VFS traits now live under `src/kernel/vfs`, with `/dev/null`, `/dev/zero`, `/scratch`, and `/fat/...` routed through the same descriptor table.
+- `src/kernel/fs/fat.rs` provides a read-only FAT12/16 implementation that mounts a volume at boot (default LBA `4096`).  It exposes 8.3 files in the root directory through the VFS so `open("/fat/NAME.EXT")` Just Works.
+- Boot-time smoke tests in `ticker_task_a` write to `/dev/null`, read `/dev/zero`, hit `/scratch`, and (if present) log the contents of `/fat/HELLO.TXT`.
+
 ### Memory Management & Diagnostics
 
 - Physical memory is parsed from Multiboot tables and logged during boot.
@@ -77,6 +84,22 @@ Build environment is provided as a docker container. Create the docker image wit
 
 ```
 docker build buildenv -t ares_build
+```
+
+### Preparing the FAT test volume
+
+The kernel expects a FAT16 filesystem beginning at sector 4096 (2 MiB) inside the raw disk image.  Format it and copy a test file with:
+
+```
+mkfs.fat --offset=4096 -F 16 -n ARESFAT dist/x86_64/hda.img
+mcopy -i dist/x86_64/hda.img@@2097152 TEST.TXT ::HELLO.TXT
+```
+
+(`2097152 = 4096 × 512` bytes.)  On the next boot you should see a log message similar to:
+
+```
+[fat] mounted volume at LBA 4096
+[vfs:smoke] /fat/HELLO.TXT read 12 bytes: Hello World!
 ```
 
 You can now build the project with the following:

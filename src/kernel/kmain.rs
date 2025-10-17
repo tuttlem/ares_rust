@@ -6,6 +6,7 @@ pub mod arch;
 mod interrupts;
 mod klog;
 mod drivers;
+mod fs;
 mod mem;
 mod syscall;
 mod sync;
@@ -22,6 +23,7 @@ use core::ptr;
 use core::str;
 
 use crate::mem::heap::{self, HeapBox};
+const FAT_START_LBA: u64 = 4096;
 use crate::vfs::ata::AtaScratchFile;
 use crate::vfs::VfsFile;
 
@@ -67,6 +69,10 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         unsafe {
             let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
             klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+        }
+        match fs::fat::mount(ata_dev, FAT_START_LBA) {
+            Ok(()) => klog!("[fat] mounted volume at LBA {}\n", FAT_START_LBA),
+            Err(err) => klog!("[fat] mount failed: {:?}\n", err),
         }
     } else {
         klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
@@ -311,6 +317,28 @@ fn vfs_smoke_checks() {
             }
         }
         Err(err) => klog!("[vfs:smoke] open /scratch failed: {:?}\n", err),
+    }
+
+    // --- /fat/HELLO.TXT (if present) ---
+    match syscall::open("/fat/HELLO.TXT") {
+        Ok(fd) => {
+            let fd = fd as u64;
+            let mut buf = [0u8; 64];
+            match syscall::read(fd, &mut buf) {
+                Ok(read) => {
+                    if let Err(err) = syscall::seek(fd, 0, syscall::SeekWhence::Set) {
+                        klog!("[vfs:smoke] /fat seek failed: {:?}\n", err);
+                    }
+                    let text = core::str::from_utf8(&buf[..read]).unwrap_or("<non-utf8>");
+                    klog!("[vfs:smoke] /fat/HELLO.TXT read {} bytes: {}\n", read, text);
+                }
+                Err(err) => klog!("[vfs:smoke] /fat read failed: {:?}\n", err),
+            }
+            if let Err(err) = syscall::close(fd) {
+                klog!("[vfs:smoke] /fat close failed: {:?}\n", err);
+            }
+        }
+        Err(err) => klog!("[vfs:smoke] open /fat/HELLO.TXT failed: {:?}\n", err),
     }
 }
 

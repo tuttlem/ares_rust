@@ -1301,21 +1301,32 @@ pub fn set_current_pid(pid: Pid) {
 }
 
 pub fn open_path(pid: Pid, path: &str) -> Result<usize, ProcessError> {
-    let descriptor = match path {
-        "/scratch" => {
-            let file = crate::vfs::ata::AtaScratchFile::get().ok_or(ProcessError::PathNotFound)?;
-            FileDescriptor::Vfs(VfsHandle::new(file))
+    let descriptor = if path.starts_with("/fat/") {
+        let sub = &path[5..];
+        let file = crate::fs::fat::open_file(sub).map_err(|err| match err {
+            crate::fs::fat::FatError::NotMounted => ProcessError::PathNotFound,
+            crate::fs::fat::FatError::InvalidPath => ProcessError::PathNotFound,
+            crate::fs::fat::FatError::NotFound => ProcessError::PathNotFound,
+            crate::fs::fat::FatError::Io => ProcessError::AllocationFailed,
+        })?;
+        FileDescriptor::Vfs(VfsHandle::new(file))
+    } else {
+        match path {
+            "/scratch" => {
+                let file = crate::vfs::ata::AtaScratchFile::get().ok_or(ProcessError::PathNotFound)?;
+                FileDescriptor::Vfs(VfsHandle::new(file))
+            }
+            "/dev/console" => FileDescriptor::Char(console::driver()),
+            "/dev/null" => {
+                let dev = crate::drivers::char_device_by_name("null").ok_or(ProcessError::PathNotFound)?;
+                FileDescriptor::Char(dev)
+            }
+            "/dev/zero" => {
+                let dev = crate::drivers::char_device_by_name("zero").ok_or(ProcessError::PathNotFound)?;
+                FileDescriptor::Char(dev)
+            }
+            _ => return Err(ProcessError::PathNotFound),
         }
-        "/dev/console" => FileDescriptor::Char(console::driver()),
-        "/dev/null" => {
-            let dev = crate::drivers::char_device_by_name("null").ok_or(ProcessError::PathNotFound)?;
-            FileDescriptor::Char(dev)
-        }
-        "/dev/zero" => {
-            let dev = crate::drivers::char_device_by_name("zero").ok_or(ProcessError::PathNotFound)?;
-            FileDescriptor::Char(dev)
-        }
-        _ => return Err(ProcessError::PathNotFound),
     };
 
     let mut table = PROCESS_TABLE.lock();
