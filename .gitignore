@@ -1,5 +1,7 @@
 build
 dist
 
+target/
+
 .idea
 *.log
