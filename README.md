@@ -108,6 +108,28 @@ You can now build the project with the following:
 ./domake build-x86_64
 ```
 
+### Testing
+
+- **Host-side unit tests:**
+
+  The `ares-core` crate mirrors the kernel's pure Rust subsystems and exposes them behind a `std` feature so they can be exercised on the host. Run the suite (FAT parsing, VFS scratch file, etc.) with:
+
+  ```
+  cargo test -p ares-core
+  ```
+
+  The FAT tests build an in-memory disk image, while the VFS tests use a mocked block device; no special tooling is required beyond a standard Rust toolchain.
+
+- **Kernel integration tests:**
+
+  The kernel ships with a minimal in-kernel harness guarded by `--cfg kernel_test`. Build and execute it under QEMU (using the ISA debug-exit device for pass/fail reporting) with:
+
+  ```
+  make run-tests
+  ```
+
+  The harness initialises the heap and process table, runs a handful of smoke tests (heap allocations, process spawning), and then exits via `outb(0xF4, code)`. A zero exit code indicates success; non-zero values correspond to the number of failing tests.
+
 ## Running
 
 Using qemu, you can you use the following:

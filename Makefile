@@ -26,6 +26,10 @@ boot_object_files     := $(boot_asm_object_files)
 kernel_source_files   := src/kernel/kmain.rs
 kernel_object_files   := build/kernel/kmain.o
 
+OUTPUT_BIN ?= dist/x86_64/kernel.bin
+OUTPUT_ISO ?= dist/x86_64/kernel.iso
+KERNEL_CFG ?=
+
 arch_kernel_source_dir        := src/arch/x86_64/kernel
 arch_kernel_build_dir         := build/arch/x86_64/kernel
 arch_kernel_asm_source_files  := $(shell find $(arch_kernel_source_dir) -name "*.asm" 2>/dev/null)
@@ -33,7 +37,7 @@ arch_kernel_asm_object_files  := $(patsubst $(arch_kernel_source_dir)/%.asm, $(a
 
 arch_kernel_object_files      := $(arch_kernel_asm_object_files)
 
-.PHONY: build-x86_64
+.PHONY: build-x86_64 test-kernel run-tests
 
 all: build-x86_64
 
@@ -43,7 +47,7 @@ $(boot_asm_object_files): $(boot_build_dir)/%.o : $(boot_source_dir)/%.asm
 
 $(kernel_object_files): build/kernel/%.o : src/kernel/%.rs
 	mkdir -p $(dir $@) && \
-	$(RUSTC) $(RUSTFLAGS) --target $(RUST_TARGET) --emit=obj -o $@ --crate-type=lib $<
+	$(RUSTC) $(RUSTFLAGS) $(KERNEL_CFG) --target $(RUST_TARGET) --emit=obj -o $@ --crate-type=lib $<
 
 $(arch_kernel_asm_object_files): $(arch_kernel_build_dir)/%.o : $(arch_kernel_source_dir)/%.asm
 	mkdir -p $(dir $@) && \
@@ -51,9 +55,9 @@ $(arch_kernel_asm_object_files): $(arch_kernel_build_dir)/%.o : $(arch_kernel_so
 
 build-x86_64: $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files)
 	mkdir -p dist/x86_64 && \
-	$(LD) $(LFLAGS) -o dist/x86_64/kernel.bin -T targets/x86_64/linker.ld $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files) $(x86_64_object_files) $(RUST_RLIBS) && \
-	cp dist/x86_64/kernel.bin targets/x86_64/iso/boot/kernel.bin && \
-	grub-mkrescue /usr/lib/grub/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso
+	$(LD) $(LFLAGS) -o $(OUTPUT_BIN) -T targets/x86_64/linker.ld $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files) $(x86_64_object_files) $(RUST_RLIBS) && \
+	cp $(OUTPUT_BIN) targets/x86_64/iso/boot/kernel.bin && \
+	grub-mkrescue /usr/lib/grub/i386-pc -o $(OUTPUT_ISO) targets/x86_64/iso
 
 clean:
 	rm -Rf ./distWhe
@@ -65,3 +69,18 @@ run: build-x86_64
 										 -serial file:kernel.log \
 										 -d int,cpu_reset \
 										 -no-reboot
+
+TEST_ISO := dist/x86_64/kernel-test.iso
+
+test-kernel: clean
+test-kernel: KERNEL_CFG = --cfg kernel_test
+test-kernel: OUTPUT_BIN = dist/x86_64/kernel-test.bin
+test-kernel: OUTPUT_ISO = $(TEST_ISO)
+test-kernel: build-x86_64
+
+run-tests: test-kernel
+	qemu-system-x86_64 -cdrom $(TEST_ISO) \
+						 -device isa-debug-exit,iobase=0xf4,iosize=0x01 \
+						 -serial stdio \
+						 -display none \
+						 -no-reboot

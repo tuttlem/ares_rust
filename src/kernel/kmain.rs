@@ -14,17 +14,25 @@ mod timer;
 mod cpu;
 mod vfs;
 pub mod process;
+#[cfg(kernel_test)]
+mod tests;
 
+#[cfg(not(kernel_test))]
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::hint::spin_loop;
 use core::panic::PanicInfo;
+#[cfg(not(kernel_test))]
 use core::ptr;
 use core::str;
 
-use crate::mem::heap::{self, HeapBox};
+use crate::mem::heap;
+#[cfg(not(kernel_test))]
+use crate::mem::heap::HeapBox;
 const FAT_START_LBA: u64 = 4096;
+#[cfg(not(kernel_test))]
 use crate::vfs::ata::AtaScratchFile;
+#[cfg(not(kernel_test))]
 use crate::vfs::VfsFile;
 
 #[no_mangle]
@@ -40,47 +48,53 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     interrupts::init();
     mem::phys::init(info_addr);
     heap::init();
-    drivers::init();
 
-    let vendor_raw = cpu::vendor_string();
-    let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
-    klog!("[kmain] CPU vendor: {vendor}\n");
-    klog!("[kmain] CPUID max basic leaf: 0x{:08X}\n", cpu::highest_basic_leaf());
-    klog!("[kmain] CPUID max extended leaf: 0x{:08X}\n", cpu::highest_extended_leaf());
+    #[cfg(kernel_test)]
+    tests::run();
+
+    #[cfg(not(kernel_test))]
+    {
+        drivers::init();
+
+        let vendor_raw = cpu::vendor_string();
+        let vendor = str::from_utf8(&vendor_raw).unwrap_or("unknown");
+        klog!("[kmain] CPU vendor: {vendor}\n");
+        klog!("[kmain] CPUID max basic leaf: 0x{:08X}\n", cpu::highest_basic_leaf());
+        klog!("[kmain] CPUID max extended leaf: 0x{:08X}\n", cpu::highest_extended_leaf());
 
     let features = cpu::features();
     klog!("[kmain] CPUID feature ECX: 0x{:08X}\n", features.ecx);
     klog!("[kmain] CPUID feature EDX: 0x{:08X}\n", features.edx);
 
-    if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
-        unsafe { cpu::enable_sse(); }
-        klog::writeln("[kmain] SSE/SSE2 enabled\n");
-    } else {
-        klog::writeln("[kmain] SSE/SSE2 unavailable\n");
-    }
-
-    if features.has_ecx(cpu::feature::ecx::AVX) {
-        klog::writeln("[kmain] AVX supported\n");
-    }
-
-    drivers::register_builtin();
-    drivers::list_drivers();
-    if let Some(ata_dev) = drivers::block_device_by_name("ata0-master") {
-        unsafe {
-            let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
-            klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+        if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
+            unsafe { cpu::enable_sse(); }
+            klog::writeln("[kmain] SSE/SSE2 enabled\n");
+        } else {
+            klog::writeln("[kmain] SSE/SSE2 unavailable\n");
         }
-        match fs::fat::mount(ata_dev, FAT_START_LBA) {
-            Ok(()) => klog!("[fat] mounted volume at LBA {}\n", FAT_START_LBA),
-            Err(err) => klog!("[fat] mount failed: {:?}\n", err),
+
+        if features.has_ecx(cpu::feature::ecx::AVX) {
+            klog::writeln("[kmain] AVX supported\n");
         }
-    } else {
-        klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
-    }
-    process::init().expect("process init");
-    syscall::init();
-    let banner = b"[ares] Booting Ares kernel\n";
-    let _ = syscall::write(syscall::fd::STDOUT, banner);
+
+        drivers::register_builtin();
+        drivers::list_drivers();
+        if let Some(ata_dev) = drivers::block_device_by_name("ata0-master") {
+            unsafe {
+                let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
+                klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+            }
+            match fs::fat::mount(ata_dev, FAT_START_LBA) {
+                Ok(()) => klog!("[fat] mounted volume at LBA {}\n", FAT_START_LBA),
+                Err(err) => klog!("[fat] mount failed: {:?}\n", err),
+            }
+        } else {
+            klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
+        }
+        process::init().expect("process init");
+        syscall::init();
+        let banner = b"[ares] Booting Ares kernel\n";
+        let _ = syscall::write(syscall::fd::STDOUT, banner);
 
     let before = heap::remaining_bytes();
     {
@@ -106,18 +120,19 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         }
     }
 
-    timer::init();
+        timer::init();
 
-    process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
-    process::spawn_kernel_process("ticker_a", ticker_task_a).expect("spawn ticker_a");
-    process::spawn_kernel_process("ticker_b", ticker_task_b).expect("spawn ticker_b");
-    process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
-    process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
-    process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
+        process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
+        process::spawn_kernel_process("ticker_a", ticker_task_a).expect("spawn ticker_a");
+        process::spawn_kernel_process("ticker_b", ticker_task_b).expect("spawn ticker_b");
+        process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
+        process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
+        process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
 
-    interrupts::enable();
+        interrupts::enable();
 
-    process::start_scheduler();
+        process::start_scheduler();
+    }
 }
 
 extern "C" fn init_shell_task() -> ! {
