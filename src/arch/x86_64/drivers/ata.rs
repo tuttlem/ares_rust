@@ -5,6 +5,7 @@ use crate::drivers::{BlockDevice, Driver, DriverError, DriverKind};
 use crate::klog;
 
 use super::super::io::{inb, insw, outb, outsw};
+use crate::sync::spinlock::SpinLock;
 
 const PRIMARY_IO_BASE: u16 = 0x1F0;
 const PRIMARY_CTRL_BASE: u16 = 0x3F6;
@@ -40,6 +41,7 @@ const SECTOR_BYTES: usize = 512;
 pub struct AtaPrimaryMaster;
 
 static ATA_PRIMARY: AtaPrimaryMaster = AtaPrimaryMaster;
+static ATA_LOCK: SpinLock<()> = SpinLock::new(());
 
 impl AtaPrimaryMaster {
     const fn io_base(&self) -> u16 {
@@ -181,6 +183,23 @@ impl AtaPrimaryMaster {
         Ok(())
     }
 
+    fn flush_locked(&self) -> Result<(), DriverError> {
+        unsafe {
+            outb(self.io_base() + REG_COMMAND, CMD_CACHE_FLUSH);
+        }
+
+        // Wait until BSY=0; ERR/DF clear
+        self.wait_until(0, 0, 200_000)?;
+
+        let st = unsafe { inb(self.io_base() + REG_STATUS) };
+
+        if st & (STATUS_ERR | STATUS_DF) != 0 {
+            return Err(DriverError::IoError);
+        }
+
+        Ok(())
+    }
+
 }
 
 impl Driver for AtaPrimaryMaster {
@@ -193,6 +212,8 @@ impl Driver for AtaPrimaryMaster {
     }
 
     fn init(&self) -> Result<(), DriverError> {
+        let _guard = ATA_LOCK.lock();
+
         match self.issue_identify() {
             Ok(()) => {
                 klog!("[ata] primary master ready\n");
@@ -212,6 +233,8 @@ impl BlockDevice for AtaPrimaryMaster {
     }
 
     fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> Result<(), DriverError> {
+        let _guard = ATA_LOCK.lock();
+
         if buf.len() % SECTOR_BYTES != 0 {
             return Err(DriverError::Unsupported);
         }
@@ -230,23 +253,13 @@ impl BlockDevice for AtaPrimaryMaster {
     }
 
     fn flush(&self) -> Result<(), DriverError> {
-        unsafe {
-            outb(self.io_base() + REG_COMMAND, CMD_CACHE_FLUSH);
-        }
-
-        // Wait until BSY=0; ERR/DF clear
-        self.wait_until(0, 0, 200_000)?;
-
-        let st = unsafe { inb(self.io_base() + REG_STATUS) };
-
-        if st & (STATUS_ERR | STATUS_DF) != 0 {
-            return Err(DriverError::IoError);
-        }
-
-        Ok(())
+        let _guard = ATA_LOCK.lock();
+        self.flush_locked()
     }
 
     fn write_blocks(&self, lba: u64, buf: &[u8]) -> Result<(), DriverError> {
+        let _guard = ATA_LOCK.lock();
+
         if buf.len() % SECTOR_BYTES != 0 {
             return Err(DriverError::Unsupported);
         }
@@ -260,7 +273,7 @@ impl BlockDevice for AtaPrimaryMaster {
             self.pio_write_sector(lba + i as u64, &sector)?;
         }
 
-        self.flush()?;
+        self.flush_locked()?;
 
         Ok(())
     }
