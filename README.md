@@ -125,10 +125,10 @@ You can now build the project with the following:
   The kernel ships with a minimal in-kernel harness guarded by `--cfg kernel_test`. Build and execute it under QEMU (using the ISA debug-exit device for pass/fail reporting) with:
 
   ```
-  make run-tests
+  make qemu-test
   ```
 
-  The harness initialises the heap and process table, runs a handful of smoke tests (heap allocations, process spawning), and then exits via `outb(0xF4, code)`. A zero exit code indicates success; non-zero values correspond to the number of failing tests.
+  The harness initialises the heap and process table, runs a handful of smoke tests (heap allocations, process spawning), and then exits via `outb(0xF4, code)`. A zero exit code indicates success; non-zero values correspond to the number of failing tests. You can target a subset of checks with `FILTER`, e.g. `make qemu-test FILTER=process` or `make qemu-test FILTER=memory.heap_allocation`.
 
 ## Running
 

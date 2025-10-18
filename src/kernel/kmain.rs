@@ -50,7 +50,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     heap::init();
 
     #[cfg(kernel_test)]
-    tests::run();
+    tests::run(info_addr);
 
     #[cfg(not(kernel_test))]
     {
