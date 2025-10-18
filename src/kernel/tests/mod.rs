@@ -3,8 +3,11 @@
 use crate::arch::x86_64::qemu;
 use crate::klog;
 
+mod common;
 mod memory;
 mod process;
+mod vfs;
+mod fat;
 
 pub type TestResult = Result<(), &'static str>;
 
@@ -27,6 +30,8 @@ impl TestCase {
 const SUITES: &[(&str, &[TestCase])] = &[
     ("memory", memory::TESTS),
     ("process", process::TESTS),
+    ("vfs", vfs::TESTS),
+    ("fat", fat::TESTS),
 ];
 
 pub fn run(multiboot_info_addr: usize) -> ! {

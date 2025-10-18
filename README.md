@@ -128,7 +128,7 @@ You can now build the project with the following:
   make qemu-test
   ```
 
-  The harness initialises the heap and process table, runs a handful of smoke tests (heap allocations, process spawning), and then exits via `outb(0xF4, code)`. A zero exit code indicates success; non-zero values correspond to the number of failing tests. You can target a subset of checks with `FILTER`, e.g. `make qemu-test FILTER=process` or `make qemu-test FILTER=memory.heap_allocation`.
+  The harness initialises the heap, process table, and the in-kernel test fixtures before running named suites such as `memory`, `process`, `vfs`, and `fat`. It exits via `outb(0xF4, code)`; zero means success, any other value is the number of failing tests. Use `FILTER` to run a subset (for example `make qemu-test FILTER=vfs` or `make qemu-test FILTER=fat.read_hello`).
 
 ## Running
 

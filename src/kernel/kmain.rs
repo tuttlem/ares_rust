@@ -62,19 +62,19 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         klog!("[kmain] CPUID max basic leaf: 0x{:08X}\n", cpu::highest_basic_leaf());
         klog!("[kmain] CPUID max extended leaf: 0x{:08X}\n", cpu::highest_extended_leaf());
 
-    let features = cpu::features();
-    klog!("[kmain] CPUID feature ECX: 0x{:08X}\n", features.ecx);
-    klog!("[kmain] CPUID feature EDX: 0x{:08X}\n", features.edx);
+        let features = cpu::features();
+        klog!("[kmain] CPUID feature ECX: 0x{:08X}\n", features.ecx);
+        klog!("[kmain] CPUID feature EDX: 0x{:08X}\n", features.edx);
 
         if features.has_edx(cpu::feature::edx::SSE) && features.has_edx(cpu::feature::edx::SSE2) {
             unsafe { cpu::enable_sse(); }
-            klog::writeln("[kmain] SSE/SSE2 enabled\n");
+            klog::writeln("[kmain] SSE/SSE2 enabled");
         } else {
-            klog::writeln("[kmain] SSE/SSE2 unavailable\n");
+            klog::writeln("[kmain] SSE/SSE2 unavailable");
         }
 
         if features.has_ecx(cpu::feature::ecx::AVX) {
-            klog::writeln("[kmain] AVX supported\n");
+            klog::writeln("[kmain] AVX supported");
         }
 
         drivers::register_builtin();

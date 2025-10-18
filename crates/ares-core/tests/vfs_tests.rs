@@ -44,6 +44,35 @@ fn scratch_bounds_checks() {
 }
 
 #[test]
+fn scratch_overlapping_writes() {
+    let _guard = SCRATCH_GUARD.lock().unwrap();
+    let dev = fresh_device();
+    let file = unsafe { AtaScratchFile::init(dev, 0, "scratch") };
+
+    file.write_at(100, b"abcdef").unwrap();
+    file.write_at(102, b"XYZ").unwrap();
+
+    let mut buf = [0u8; 6];
+    file.read_at(100, &mut buf).unwrap();
+    assert_eq!(&buf, b"abXYZf");
+
+    let mut disk = [0u8; BLOCK_SIZE];
+    dev.read_blocks(0, &mut disk).unwrap();
+    assert_eq!(&disk[100..106], b"abXYZf");
+}
+
+#[test]
+fn scratch_rejects_large_write() {
+    let _guard = SCRATCH_GUARD.lock().unwrap();
+    let dev = fresh_device();
+    let file = unsafe { AtaScratchFile::init(dev, 0, "scratch") };
+
+    let buf = [0u8; BLOCK_SIZE + 16];
+    let err = file.write_at(0, &buf).unwrap_err();
+    assert_eq!(err, VfsError::Unsupported);
+}
+
+#[test]
 fn scratch_seek_write_within_sector() {
     let _guard = SCRATCH_GUARD.lock().unwrap();
     let dev = fresh_device();
