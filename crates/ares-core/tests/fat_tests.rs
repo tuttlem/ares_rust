@@ -1,7 +1,10 @@
+use std::sync::Mutex;
+
 use ares_core::drivers::mock::MemBlockDevice;
 use ares_core::fs::fat::{self, FatError};
 
 const SECTOR_SIZE: usize = 512;
+static FAT_GUARD: Mutex<()> = Mutex::new(());
 
 fn fat_image_with_hello() -> Vec<u8> {
     let mut image = vec![0u8; SECTOR_SIZE * 10];
@@ -106,6 +109,7 @@ fn fat_image_with_large_file() -> Vec<u8> {
 
 #[test]
 fn short_name_conversion() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let short = fat::test_format_short_name("HELLO.TXT").unwrap();
     assert_eq!(&short, b"HELLO   TXT");
     assert!(fat::test_format_short_name("too_long_name.ext").is_none());
@@ -113,6 +117,7 @@ fn short_name_conversion() {
 
 #[test]
 fn open_and_read_file() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let image = fat_image_with_hello();
     let dev = Box::leak(Box::new(MemBlockDevice::new("mem-fat", image, SECTOR_SIZE)));
     fat::mount(dev, 0).expect("mount");
@@ -125,6 +130,7 @@ fn open_and_read_file() {
 
 #[test]
 fn missing_file_errors() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let image = fat_image_with_hello();
     let dev = Box::leak(Box::new(MemBlockDevice::new("mem-fat", image, SECTOR_SIZE)));
     fat::mount(dev, 0).expect("mount");
@@ -134,6 +140,7 @@ fn missing_file_errors() {
 
 #[test]
 fn read_beyond_end_returns_zero() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let image = fat_image_with_hello();
     let dev = Box::leak(Box::new(MemBlockDevice::new("mem-fat", image, SECTOR_SIZE)));
     fat::mount(dev, 0).expect("mount");
@@ -147,6 +154,7 @@ fn read_beyond_end_returns_zero() {
 
 #[test]
 fn multi_cluster_read() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let image = fat_image_with_large_file();
     let dev = Box::leak(Box::new(MemBlockDevice::new("mem-fat", image, SECTOR_SIZE)));
     fat::mount(dev, 0).expect("mount");
@@ -160,6 +168,7 @@ fn multi_cluster_read() {
 
 #[test]
 fn large_buffer_partial_read() {
+    let _guard = FAT_GUARD.lock().unwrap();
     let image = fat_image_with_large_file();
     let dev = Box::leak(Box::new(MemBlockDevice::new("mem-fat", image, SECTOR_SIZE)));
     fat::mount(dev, 0).expect("mount");
@@ -167,5 +176,5 @@ fn large_buffer_partial_read() {
     let mut buf = [0u8; 256];
     let count = file.read_at(256, &mut buf).expect("read slice");
     assert_eq!(count, 256);
-    assert!(buf.iter().all(|&b| b == b'A'));
+    assert!(buf[..count].iter().all(|&b| b == b'A'));
 }
