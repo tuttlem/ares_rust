@@ -1,8 +1,15 @@
 [workspace]
 members = [
-    "crates/ares-core"
+    "crates/ares-core",
+    "user/hello"
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

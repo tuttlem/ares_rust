@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate alloc;
+
 #[path = "../arch/mod.rs"]
 pub mod arch;
 
@@ -13,6 +15,7 @@ mod sync;
 mod timer;
 mod cpu;
 mod vfs;
+pub mod user;
 pub mod process;
 #[cfg(kernel_test)]
 mod tests;
@@ -123,6 +126,12 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         timer::init();
 
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
+
+        if let Err(err) = process::spawn_user_process("hello", "/bin/hello") {
+            klog!("[kmain] failed to spawn user process: {:?}\n", err);
+        } else {
+            klog!("[kmain] started user process '/bin/hello'\n");
+        }
 
         interrupts::enable();
 

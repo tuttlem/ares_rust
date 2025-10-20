@@ -6,3 +6,5 @@ pub mod msr;
 pub mod pit;
 pub mod syscall;
 pub mod timer;
+pub mod paging;
+pub mod usermode;

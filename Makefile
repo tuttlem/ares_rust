@@ -42,6 +42,16 @@ arch_kernel_object_files      := $(arch_kernel_asm_object_files)
 
 all: build-x86_64
 
+USER_TARGET := user/hello
+USER_BIN := target/$(RUST_TARGET)/release/hello
+
+.PHONY: user-bins
+
+user-bins:
+	cargo build --release --target $(RUST_TARGET) --manifest-path $(USER_TARGET)/Cargo.toml
+	mkdir -p $(ISO_ROOT)/bin
+	cp $(USER_BIN) $(ISO_ROOT)/bin/hello
+
 $(boot_asm_object_files): $(boot_build_dir)/%.o : $(boot_source_dir)/%.asm
 	mkdir -p $(dir $@) && \
 	$(AS) $(AFLAGS) $(patsubst $(boot_build_dir)/%.o, $(boot_source_dir)/%.asm, $@) -o $@
@@ -54,7 +64,7 @@ $(arch_kernel_asm_object_files): $(arch_kernel_build_dir)/%.o : $(arch_kernel_so
 	mkdir -p $(dir $@) && \
 	$(AS) $(AFLAGS) $(patsubst $(arch_kernel_build_dir)/%.o, $(arch_kernel_source_dir)/%.asm, $@) -o $@
 
-build-x86_64: $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files)
+build-x86_64: user-bins $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files)
 	mkdir -p dist/x86_64 && \
 	$(LD) $(LFLAGS) -o $(OUTPUT_BIN) -T targets/x86_64/linker.ld $(boot_object_files) $(arch_kernel_object_files) $(kernel_object_files) $(x86_64_object_files) $(RUST_RLIBS) && \
 	cp $(OUTPUT_BIN) $(ISO_ROOT)/boot/kernel.bin && \

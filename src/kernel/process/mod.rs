@@ -1,13 +1,25 @@
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::drivers::{console, keyboard, CharDevice, DriverError};
 use crate::klog;
-use crate::mem::heap;
+use crate::mem::{heap, phys};
 use crate::sync::spinlock::SpinLock;
+use crate::user::{self, Credentials};
 use crate::vfs::{VfsError, VfsFile};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::x86_64::kernel::{
+    mmu,
+    paging::{self, FLAG_NO_EXECUTE, FLAG_USER, FLAG_WRITABLE},
+    usermode,
+};
 
 use core::alloc::Layout;
 use core::array;
@@ -110,6 +122,73 @@ impl Context {
             rip: 0,
             rflags: 0x202, // IF set
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressSpaceKind {
+    Kernel,
+    User,
+}
+
+#[derive(Clone, Copy)]
+pub struct AddressSpace {
+    cr3: u64,
+    kind: AddressSpaceKind,
+}
+
+impl AddressSpace {
+    pub fn kernel() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        let cr3 = unsafe { mmu::read_cr3() };
+
+        #[cfg(not(target_arch = "x86_64"))]
+        let cr3 = 0;
+
+        Self {
+            cr3,
+            kind: AddressSpaceKind::Kernel,
+        }
+    }
+
+    pub const fn with_cr3(cr3: u64, kind: AddressSpaceKind) -> Self {
+        Self { cr3, kind }
+    }
+
+    pub const fn cr3(&self) -> u64 {
+        self.cr3
+    }
+
+    pub const fn kind(&self) -> AddressSpaceKind {
+        self.kind
+    }
+
+    pub const fn is_user(&self) -> bool {
+        matches!(self.kind, AddressSpaceKind::User)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserStack {
+    top: u64,
+    size: usize,
+}
+
+impl UserStack {
+    pub const fn new(top: u64, size: usize) -> Self {
+        Self { top, size }
+    }
+
+    pub const fn top(&self) -> u64 {
+        self.top
+    }
+
+    pub const fn size(&self) -> usize {
+        self.size
+    }
+
+    pub const fn base(&self) -> u64 {
+        self.top - self.size as u64
     }
 }
 
@@ -284,6 +363,8 @@ pub struct Process {
     pid: Pid,
     parent: Option<Pid>,
     name: &'static str,
+    credentials: Credentials,
+    address_space: AddressSpace,
     state: ProcessState,
     wait_channel: Option<WaitChannel>,
     exit_code: Option<i32>,
@@ -295,6 +376,8 @@ pub struct Process {
     stack_ptr: *mut u8,
     stack_layout: Option<Layout>,
     regions: MemoryRegionList,
+    user_stack: Option<UserStack>,
+    user_entry: Option<u64>,
 }
 
 impl Process {
@@ -304,6 +387,7 @@ impl Process {
         parent: Option<Pid>,
         entry: ProcessEntry,
         is_idle: bool,
+        credentials: Credentials,
     ) -> Result<Self, ProcessError> {
         let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| ProcessError::StackAllocationFailed)?;
         let stack_ptr = unsafe { heap::allocate(layout) };
@@ -326,10 +410,14 @@ impl Process {
 
         let fds: [Option<FileDescriptor>; MAX_FDS] = array::from_fn(|_| None);
 
+        let address_space = AddressSpace::kernel();
+
         let mut process = Self {
             pid,
             parent,
             name,
+            credentials,
+            address_space,
             state: ProcessState::Ready,
             wait_channel: None,
             exit_code: None,
@@ -341,6 +429,8 @@ impl Process {
             stack_ptr,
             stack_layout: Some(layout),
             regions: MemoryRegionList::new(),
+            user_stack: None,
+            user_entry: None,
         };
 
         let console_device = console::driver();
@@ -364,6 +454,90 @@ impl Process {
         Ok(process)
     }
 
+    fn new_user(
+        pid: Pid,
+        name: &'static str,
+        parent: Option<Pid>,
+        path: &'static str,
+        credentials: Credentials,
+    ) -> Result<Self, ProcessError> {
+        let (image, data) = user::loader::load_elf(path).map_err(|err| match err {
+            user::loader::LoaderError::File(user::loader::FileError::NotFound) => ProcessError::PathNotFound,
+            user::loader::LoaderError::File(_) => ProcessError::UserImageIo,
+            user::loader::LoaderError::Elf(_) => ProcessError::InvalidElf,
+        })?;
+
+        let (address_space, user_stack) = create_default_user_address_space()?;
+
+        map_user_segments(&address_space, &image, &data)?;
+
+        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| ProcessError::StackAllocationFailed)?;
+        let stack_ptr = unsafe { heap::allocate(layout) };
+        if stack_ptr.is_null() {
+            return Err(ProcessError::StackAllocationFailed);
+        }
+
+        let stack_top = unsafe { stack_ptr.add(KERNEL_STACK_SIZE) } as u64;
+        let mut aligned_top = stack_top & !0xFu64;
+
+        let mut context = Context::new();
+        context.rsp = aligned_top;
+        context.rbp = aligned_top;
+        context.rip = usermode::trampoline() as usize as u64;
+        context.r15 = image.entry;
+        context.r14 = user_stack.top();
+
+        unsafe {
+            aligned_top = aligned_top.saturating_sub(8);
+            (aligned_top as *mut u64).write(process_exit as u64);
+            context.rsp = aligned_top;
+            context.rbp = aligned_top;
+        }
+
+        let fds: [Option<FileDescriptor>; MAX_FDS] = array::from_fn(|_| None);
+
+        let mut process = Self {
+            pid,
+            parent,
+            name,
+            credentials,
+            address_space,
+            state: ProcessState::Ready,
+            wait_channel: None,
+            exit_code: None,
+            is_idle: false,
+            preempt_return: None,
+            cpu_slices: 0,
+            fds,
+            context,
+            stack_ptr,
+            stack_layout: Some(layout),
+            regions: MemoryRegionList::new(),
+            user_stack: Some(user_stack),
+            user_entry: Some(image.entry),
+        };
+
+        process.regions.register(MemoryRegion {
+            base: stack_ptr,
+            layout,
+            kind: MemoryRegionKind::Stack,
+            permissions: MemoryPermissions::read_write(),
+        })?;
+
+        let console_device = console::driver();
+        process.set_fd(STDOUT_FD, FileDescriptor::Char(console_device))?;
+        process.set_fd(STDERR_FD, FileDescriptor::Char(console_device))?;
+
+        let keyboard_device = keyboard::driver();
+        process.set_fd(STDIN_FD, FileDescriptor::Char(keyboard_device))?;
+
+        if let Some(file) = crate::vfs::ata::AtaScratchFile::get() {
+            process.set_fd(SCRATCH_FD, FileDescriptor::Vfs(VfsHandle::new(file)))?;
+        }
+
+        Ok(process)
+    }
+
     pub fn pid(&self) -> Pid {
         self.pid
     }
@@ -378,6 +552,38 @@ impl Process {
 
     pub fn parent(&self) -> Option<Pid> {
         self.parent
+    }
+
+    pub fn credentials(&self) -> Credentials {
+        self.credentials
+    }
+
+    pub fn set_credentials(&mut self, credentials: Credentials) {
+        self.credentials = credentials;
+    }
+
+    pub fn address_space(&self) -> AddressSpace {
+        self.address_space
+    }
+
+    pub fn set_address_space(&mut self, space: AddressSpace) {
+        self.address_space = space;
+    }
+
+    pub fn user_stack(&self) -> Option<UserStack> {
+        self.user_stack
+    }
+
+    pub fn set_user_stack(&mut self, stack: Option<UserStack>) {
+        self.user_stack = stack;
+    }
+
+    pub fn user_entry(&self) -> Option<u64> {
+        self.user_entry
+    }
+
+    pub fn set_user_entry(&mut self, entry: Option<u64>) {
+        self.user_entry = entry;
     }
 
     pub fn is_idle(&self) -> bool {
@@ -501,6 +707,11 @@ pub enum ProcessError {
     NoChildren,
     ChildNotFound,
     NoFreeFileDescriptors,
+    AddressSpaceAllocationFailed,
+    InvalidUserPointer,
+    UserMemoryNotPresent,
+    InvalidElf,
+    UserImageIo,
 }
 
 struct MemoryRegionList {
@@ -669,13 +880,41 @@ impl ProcessTable {
         is_idle: bool,
     ) -> Result<Pid, ProcessError> {
         let pid = self.allocate_pid()?;
-        let process = Process::new_kernel(pid, name, parent, entry, is_idle)?;
+        let credentials = if let Some(parent_pid) = parent {
+            self.get(parent_pid)
+                .map(|process| process.credentials)
+                .unwrap_or_else(Credentials::root)
+        } else {
+            Credentials::root()
+        };
+
+        let process = Process::new_kernel(pid, name, parent, entry, is_idle, credentials)?;
         self.push(process)?;
         if is_idle {
             self.idle_pid = Some(pid);
         } else if self.init_pid.is_none() {
             self.init_pid = Some(pid);
         }
+        Ok(pid)
+    }
+
+    fn spawn_user_process(
+        &mut self,
+        name: &'static str,
+        parent: Option<Pid>,
+        path: &'static str,
+    ) -> Result<Pid, ProcessError> {
+        let pid = self.allocate_pid()?;
+        let credentials = if let Some(parent_pid) = parent {
+            self.get(parent_pid)
+                .map(|process| process.credentials)
+                .unwrap_or_else(Credentials::root)
+        } else {
+            Credentials::root()
+        };
+
+        let process = Process::new_user(pid, name, parent, path, credentials)?;
+        self.push(process)?;
         Ok(pid)
     }
 
@@ -901,6 +1140,17 @@ pub fn spawn_kernel_process(name: &'static str, entry: ProcessEntry) -> Result<P
     }
     let pid = table.spawn_kernel_process(name, current_pid(), entry, false)?;
     klog!("[process] spawned '{}' pid={}\n", name, pid);
+    Ok(pid)
+}
+
+pub fn spawn_user_process(name: &'static str, path: &'static str) -> Result<Pid, ProcessError> {
+    let mut table = PROCESS_TABLE.lock();
+    if !table.initialized {
+        return Err(ProcessError::NotInitialized);
+    }
+    let parent = current_pid();
+    let pid = table.spawn_user_process(name, parent, path)?;
+    klog!("[process] spawned user '{}' pid={} path={}\n", name, pid, path);
     Ok(pid)
 }
 
@@ -1143,7 +1393,7 @@ pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
 }
 
 fn schedule_internal() -> bool {
-    let (current_ctx, next_ctx, next_pid) = {
+    let (current_ctx, next_ctx, current_space, next_space, next_pid) = {
         let mut table = PROCESS_TABLE.lock();
         if table.len == 0 {
             return false;
@@ -1164,6 +1414,11 @@ fn schedule_internal() -> bool {
         }
 
         let slice = table.slice_mut();
+
+        let current_space = current_index
+            .and_then(|idx| slice.get(idx))
+            .map(|process| process.address_space);
+        let next_space = slice[next_index].address_space;
 
         if let Some(idx) = current_index {
             if let Some(process) = slice.get_mut(idx) {
@@ -1186,8 +1441,19 @@ fn schedule_internal() -> bool {
             None => ptr::addr_of_mut!(BOOT_CONTEXT),
         };
 
-        (current_ctx_ptr, next_ctx_ptr, next_pid)
+        (current_ctx_ptr, next_ctx_ptr, current_space, next_space, next_pid)
     };
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let need_switch = match current_space {
+            Some(space) => space.cr3() != next_space.cr3(),
+            None => true,
+        };
+        if need_switch {
+            mmu::write_cr3(next_space.cr3());
+        }
+    }
 
     set_current_pid(next_pid);
     unsafe {
@@ -1226,7 +1492,11 @@ pub struct ProcessSnapshot {
     name: &'static str,
     state: ProcessState,
     cpu_slices: u64,
-    is_idle: bool,
+   is_idle: bool,
+   credentials: Credentials,
+   address_space: AddressSpace,
+   user_stack: Option<UserStack>,
+    user_entry: Option<u64>,
 }
 
 impl ProcessSnapshot {
@@ -1238,6 +1508,10 @@ impl ProcessSnapshot {
             state: process.state,
             cpu_slices: process.cpu_slices,
             is_idle: process.is_idle,
+            credentials: process.credentials,
+            address_space: process.address_space,
+            user_stack: process.user_stack,
+            user_entry: process.user_entry,
         }
     }
 
@@ -1263,6 +1537,22 @@ impl ProcessSnapshot {
 
     pub fn is_idle(&self) -> bool {
         self.is_idle
+    }
+
+    pub fn credentials(&self) -> Credentials {
+        self.credentials
+    }
+
+    pub fn address_space(&self) -> AddressSpace {
+        self.address_space
+    }
+
+    pub fn user_stack(&self) -> Option<UserStack> {
+        self.user_stack
+    }
+
+    pub fn user_entry(&self) -> Option<u64> {
+        self.user_entry
     }
 }
 
@@ -1304,6 +1594,278 @@ pub fn current_pid() -> Option<Pid> {
 
 pub fn set_current_pid(pid: Pid) {
     CURRENT_PID.store(pid, Ordering::Release);
+}
+
+pub fn current_credentials() -> Option<Credentials> {
+    let pid = current_pid()?;
+    let table = PROCESS_TABLE.lock();
+    table.get(pid).map(|process| process.credentials())
+}
+
+pub fn current_address_space() -> Option<AddressSpace> {
+    let pid = current_pid()?;
+    let table = PROCESS_TABLE.lock();
+    table.get(pid).map(|process| process.address_space())
+}
+
+fn ensure_user_range(ptr: u64, len: usize) -> Result<(), ProcessError> {
+    if len == 0 {
+        return Ok(());
+    }
+
+    let limit = mmu::KERNEL_VMA_BASE;
+
+    if ptr >= limit {
+        return Err(ProcessError::InvalidUserPointer);
+    }
+
+    let len_u64 = len as u64;
+    let end = ptr
+        .checked_add(len_u64)
+        .ok_or(ProcessError::InvalidUserPointer)?;
+    if end > limit {
+        return Err(ProcessError::InvalidUserPointer);
+    }
+    Ok(())
+}
+
+fn copy_from_user_internal(
+    address_space: &AddressSpace,
+    dst: &mut [u8],
+    user_ptr: u64,
+) -> Result<(), ProcessError> {
+    if dst.is_empty() {
+        return Ok(());
+    }
+
+    ensure_user_range(user_ptr, dst.len())?;
+
+    let mut copied = 0usize;
+    while copied < dst.len() {
+        let virt_addr = user_ptr + copied as u64;
+        let phys = paging::translate(address_space.cr3(), virt_addr)
+            .ok_or(ProcessError::UserMemoryNotPresent)?;
+
+        let page_base = phys & !0xFFFu64;
+        let page_offset = (phys & 0xFFFu64) as usize;
+        let avail = paging::PAGE_SIZE - page_offset;
+        let to_copy = core::cmp::min(avail, dst.len() - copied);
+
+        let src_ptr = (mmu::phys_to_virt(page_base) as *const u8).wrapping_add(page_offset);
+        unsafe {
+            core::ptr::copy_nonoverlapping(src_ptr, dst.as_mut_ptr().add(copied), to_copy);
+        }
+
+        copied += to_copy;
+    }
+
+    Ok(())
+}
+
+fn copy_to_user_internal(
+    address_space: &AddressSpace,
+    user_ptr: u64,
+    src: &[u8],
+) -> Result<(), ProcessError> {
+    if src.is_empty() {
+        return Ok(());
+    }
+
+    ensure_user_range(user_ptr, src.len())?;
+
+    let mut written = 0usize;
+    while written < src.len() {
+        let virt_addr = user_ptr + written as u64;
+        let phys = paging::translate(address_space.cr3(), virt_addr)
+            .ok_or(ProcessError::UserMemoryNotPresent)?;
+
+        let page_base = phys & !0xFFFu64;
+        let page_offset = (phys & 0xFFFu64) as usize;
+        let avail = paging::PAGE_SIZE - page_offset;
+        let to_copy = core::cmp::min(avail, src.len() - written);
+
+        let dst_ptr = (mmu::phys_to_virt(page_base) as *mut u8).wrapping_add(page_offset);
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr().add(written), dst_ptr, to_copy);
+        }
+
+        written += to_copy;
+    }
+
+    Ok(())
+}
+
+pub fn copy_from_user(
+    address_space: &AddressSpace,
+    dst: &mut [u8],
+    user_ptr: u64,
+) -> Result<(), ProcessError> {
+    match address_space.kind() {
+        AddressSpaceKind::Kernel => {
+            if dst.is_empty() {
+                return Ok(());
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    user_ptr as *const u8,
+                    dst.as_mut_ptr(),
+                    dst.len(),
+                );
+            }
+            Ok(())
+        }
+        AddressSpaceKind::User => copy_from_user_internal(address_space, dst, user_ptr),
+    }
+}
+
+pub fn copy_to_user(
+    address_space: &AddressSpace,
+    user_ptr: u64,
+    src: &[u8],
+) -> Result<(), ProcessError> {
+    match address_space.kind() {
+        AddressSpaceKind::Kernel => {
+            if src.is_empty() {
+                return Ok(());
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    user_ptr as *mut u8,
+                    src.len(),
+                );
+            }
+            Ok(())
+        }
+        AddressSpaceKind::User => copy_to_user_internal(address_space, user_ptr, src),
+    }
+}
+
+pub fn read_user_buffer(
+    address_space: &AddressSpace,
+    user_ptr: u64,
+    len: usize,
+) -> Result<Vec<u8>, ProcessError> {
+    let mut buffer = vec![0u8; len];
+    copy_from_user(address_space, &mut buffer, user_ptr)?;
+    Ok(buffer)
+}
+
+pub fn write_user_buffer(
+    address_space: &AddressSpace,
+    user_ptr: u64,
+    data: &[u8],
+) -> Result<(), ProcessError> {
+    copy_to_user(address_space, user_ptr, data)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn create_user_address_space_with_stack(
+    stack_pages: usize,
+) -> Result<(AddressSpace, UserStack), ProcessError> {
+    if stack_pages == 0 {
+        return Err(ProcessError::AddressSpaceAllocationFailed);
+    }
+
+    let pml4_phys = paging::clone_kernel_pml4()
+        .map_err(|_| ProcessError::AddressSpaceAllocationFailed)?;
+
+    let address_space = AddressSpace::with_cr3(pml4_phys, AddressSpaceKind::User);
+
+    let mut current_top = user::space::stack_top();
+    let stack_size = stack_pages
+        .checked_mul(paging::PAGE_SIZE)
+        .ok_or(ProcessError::AddressSpaceAllocationFailed)?;
+
+    for _ in 0..stack_pages {
+        let frame = phys::allocate_frame().ok_or(ProcessError::AddressSpaceAllocationFailed)?;
+        current_top = current_top.saturating_sub(paging::PAGE_SIZE as u64);
+        paging::map_page(
+            pml4_phys,
+            current_top,
+            frame.start(),
+            FLAG_WRITABLE | FLAG_USER,
+        )
+        .map_err(|_| ProcessError::AddressSpaceAllocationFailed)?;
+    }
+
+    let user_stack = UserStack::new(user::space::stack_top(), stack_size);
+    Ok((address_space, user_stack))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn create_default_user_address_space() -> Result<(AddressSpace, UserStack), ProcessError> {
+    create_user_address_space_with_stack(user::space::DEFAULT_STACK_PAGES)
+}
+
+fn map_user_segments(
+    address_space: &AddressSpace,
+    image: &user::elf::ElfImage,
+    data: &[u8],
+) -> Result<(), ProcessError> {
+    for segment in &image.segments {
+        let start = align_down(segment.vaddr, paging::PAGE_SIZE as u64);
+        let end = align_up(segment.vaddr + segment.memsz, paging::PAGE_SIZE as u64);
+
+        let mut page = start;
+        while page < end {
+            let frame = phys::allocate_frame().ok_or(ProcessError::AddressSpaceAllocationFailed)?;
+            let frame_ptr = mmu::phys_to_virt(frame.start()) as *mut u8;
+            unsafe {
+                ptr::write_bytes(frame_ptr, 0, paging::PAGE_SIZE);
+            }
+
+            let mut flags = FLAG_USER;
+            if user::elf::segment_flags_writable(segment.flags) {
+                flags |= FLAG_WRITABLE;
+            }
+            if !user::elf::segment_flags_executable(segment.flags) {
+                flags |= FLAG_NO_EXECUTE;
+            }
+
+            paging::map_page(address_space.cr3(), page, frame.start(), flags)
+                .map_err(|_| ProcessError::AddressSpaceAllocationFailed)?;
+
+            let seg_file_end = segment.vaddr + segment.filesz;
+            let copy_start = core::cmp::max(segment.vaddr, page);
+            let copy_end = core::cmp::min(seg_file_end, page + paging::PAGE_SIZE as u64);
+
+            if copy_end > copy_start {
+                let dst_offset = (copy_start - page) as usize;
+                let src_offset = (copy_start - segment.vaddr) as usize;
+                let len = (copy_end - copy_start) as usize;
+
+                let src_index = segment.offset as usize + src_offset;
+                if src_index + len > data.len() {
+                    return Err(ProcessError::InvalidElf);
+                }
+
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        data.as_ptr().add(src_index),
+                        frame_ptr.add(dst_offset),
+                        len,
+                    );
+                }
+            }
+
+            page = page.saturating_add(paging::PAGE_SIZE as u64);
+        }
+    }
+
+    Ok(())
+}
+
+fn align_down(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
+}
+
+fn align_up(value: u64, align: u64) -> u64 {
+    if value & (align - 1) == 0 {
+        value
+    } else {
+        (value | (align - 1)).saturating_add(1)
+    }
 }
 
 pub fn open_path(pid: Pid, path: &str) -> Result<usize, ProcessError> {
@@ -1455,6 +2017,23 @@ fn dump_process_inner(process: &Process) {
         process.name,
         state_name(process.state),
         process.parent);
+    klog!(
+        "           credentials {} addr_space={:?} cr3=0x{:016X}\n",
+        process.credentials,
+        process.address_space.kind(),
+        process.address_space.cr3()
+    );
+    if let Some(stack) = process.user_stack {
+        klog!(
+            "           user_stack base=0x{:016X} top=0x{:016X} size={}\n",
+            stack.base(),
+            stack.top(),
+            stack.size()
+        );
+    }
+    if let Some(entry) = process.user_entry {
+        klog!("           user_entry=0x{:016X}\n", entry);
+    }
     klog!(
         "           wait={:?} exit_code={:?} idle={} preempt_ret={:?} slices={}\n",
         process.wait_channel,

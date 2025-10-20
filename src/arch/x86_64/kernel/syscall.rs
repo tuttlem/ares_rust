@@ -1,11 +1,14 @@
 #![cfg(target_arch = "x86_64")]
 
+extern crate alloc;
+
+use alloc::vec;
 use crate::drivers::DriverError;
 use crate::klog;
 use crate::process;
 use crate::process::{FileIoError, ProcessError, SeekFrom};
 use crate::vfs::VfsError;
-use core::{slice, str};
+use core::str;
 use super::msr;
 
 pub mod nr {
@@ -172,12 +175,35 @@ fn sys_open(path_ptr: u64, path_len: u64, _flags: u64) -> u64 {
         return ERR_INVAL;
     }
 
-    let slice = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
-    let trimmed = match slice.iter().position(|&b| b == 0) {
-        Some(pos) => &slice[..pos],
-        None => slice,
+    let address_space = match process::current_address_space() {
+        Some(space) => space,
+        None => return ERR_BADF,
     };
-    let path_str = match str::from_utf8(trimmed) {
+
+    let buffer = match process::read_user_buffer(&address_space, path_ptr, path_len as usize) {
+        Ok(buf) => buf,
+        Err(err) => {
+            return match err {
+                ProcessError::InvalidUserPointer | ProcessError::UserMemoryNotPresent => ERR_FAULT,
+                _ => {
+                    klog!(
+                        "[syscall] open copy_from_user failed ptr=0x{:016X} len={} err {:?}\n",
+                        path_ptr,
+                        path_len,
+                        err
+                    );
+                    ERR_FAULT
+                }
+            };
+        }
+    };
+
+    let trimmed_len = match buffer.iter().position(|&b| b == 0) {
+        Some(pos) => pos,
+        None => buffer.len(),
+    };
+    let path_slice = &buffer[..trimmed_len];
+    let path_str = match str::from_utf8(path_slice) {
         Ok(s) => s,
         Err(_) => return ERR_INVAL,
     };
@@ -257,7 +283,16 @@ fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
     }
 
     let len = len as usize;
-    let buffer = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    let address_space = match process::current_address_space() {
+        Some(space) => space,
+        None => {
+            klog!("[syscall] read with no address space fd={} len={}\n", fd, len);
+            return ERR_BADF;
+        }
+    };
+
+    let mut kernel_buffer = vec![0u8; len];
 
     let current_pid = match process::current_pid() {
         Some(pid) => pid,
@@ -267,8 +302,25 @@ fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
         }
     };
 
-    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.read(buffer)) {
-        Ok(Ok(count)) => count as u64,
+    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.read(&mut kernel_buffer)) {
+        Ok(Ok(count)) => {
+            let count = count as usize;
+            if let Err(err) = process::copy_to_user(&address_space, buf_ptr, &kernel_buffer[..count]) {
+                return match err {
+                    ProcessError::InvalidUserPointer | ProcessError::UserMemoryNotPresent => ERR_FAULT,
+                    _ => {
+                        klog!(
+                            "[syscall] read copy_to_user failed pid {} fd {} err {:?}\n",
+                            current_pid,
+                            fd,
+                            err
+                        );
+                        ERR_FAULT
+                    }
+                };
+            }
+            count as u64
+        }
         Ok(Err(err)) => encode_error(map_file_io_error(err)),
         Err(ProcessError::InvalidFileDescriptor) => encode_error(SysError::BadFileDescriptor),
         Err(err) => {
@@ -288,7 +340,32 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
     }
 
     let len = len as usize;
-    let slice = unsafe { slice::from_raw_parts(buf_ptr as *const u8, len) };
+
+    let address_space = match process::current_address_space() {
+        Some(space) => space,
+        None => {
+            klog!("[syscall] write with no address space fd={} len={}\n", fd, len);
+            return ERR_BADF;
+        }
+    };
+
+    let kernel_buffer = match process::read_user_buffer(&address_space, buf_ptr, len) {
+        Ok(buf) => buf,
+        Err(err) => {
+            return match err {
+                ProcessError::InvalidUserPointer | ProcessError::UserMemoryNotPresent => ERR_FAULT,
+                _ => {
+                    klog!(
+                        "[syscall] write copy_from_user failed fd={} len={} err {:?}\n",
+                        fd,
+                        len,
+                        err
+                    );
+                    ERR_FAULT
+                }
+            };
+        }
+    };
 
     let current_pid = match process::current_pid() {
         Some(pid) => pid,
@@ -298,7 +375,7 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
         }
     };
 
-    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.write(slice)) {
+    match process::with_fd_mut(current_pid, fd as usize, |descriptor| descriptor.write(&kernel_buffer)) {
         Ok(Ok(count)) => count as u64,
         Ok(Err(err)) => encode_error(map_file_io_error(err)),
         Err(ProcessError::InvalidFileDescriptor) => encode_error(SysError::BadFileDescriptor),
