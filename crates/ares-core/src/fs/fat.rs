@@ -58,7 +58,8 @@ impl FatVolume {
 
         let fat_lba = start_lba + reserved_sectors as u64;
         let root_dir_lba = fat_lba + (num_fats as u64 * sectors_per_fat as u64);
-        let root_dir_sectors = ((root_entries as u32 * 32) + (bytes_per_sector as u32 - 1)) / bytes_per_sector as u32;
+        let root_dir_sectors =
+            ((root_entries as u32 * 32) + (bytes_per_sector as u32 - 1)) / bytes_per_sector as u32;
         let data_lba = root_dir_lba + root_dir_sectors as u64;
 
         Ok(Self {
@@ -97,10 +98,7 @@ impl FatVolume {
         let fat_lba = self.fat_lba + fat_sector as u64;
         self.read_sector(fat_lba, &mut sector)?;
 
-        let entry = u16::from_le_bytes([
-            sector[offset_within],
-            sector[offset_within + 1],
-        ]);
+        let entry = u16::from_le_bytes([sector[offset_within], sector[offset_within + 1]]);
 
         if entry >= FAT16_END {
             Ok(None)
@@ -109,7 +107,11 @@ impl FatVolume {
         }
     }
 
-    fn cluster_for_offset(&self, start_cluster: u16, mut offset: u64) -> Result<Option<(u16, u64)>, FatError> {
+    fn cluster_for_offset(
+        &self,
+        start_cluster: u16,
+        mut offset: u64,
+    ) -> Result<Option<(u16, u64)>, FatError> {
         if start_cluster == 0 {
             return Ok(None);
         }

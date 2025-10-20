@@ -17,7 +17,11 @@ impl AtaScratchFile {
         Self { device, lba, name }
     }
 
-    pub unsafe fn init(device: &'static dyn BlockDevice, lba: u64, name: &'static str) -> &'static AtaScratchFile {
+    pub unsafe fn init(
+        device: &'static dyn BlockDevice,
+        lba: u64,
+        name: &'static str,
+    ) -> &'static AtaScratchFile {
         SCRATCH_FILE = Some(Self::new(device, lba, name));
         SCRATCH_FILE.as_ref().unwrap()
     }
@@ -55,9 +59,7 @@ impl VfsFile for AtaScratchFile {
         }
 
         let start = offset as usize;
-        let end = start
-            .checked_add(buf.len())
-            .ok_or(VfsError::Unsupported)?;
+        let end = start.checked_add(buf.len()).ok_or(VfsError::Unsupported)?;
         if end > sector_size {
             return Err(VfsError::Unsupported);
         }
@@ -83,9 +85,7 @@ impl VfsFile for AtaScratchFile {
         }
 
         let start = offset as usize;
-        let end = start
-            .checked_add(buf.len())
-            .ok_or(VfsError::Unsupported)?;
+        let end = start.checked_add(buf.len()).ok_or(VfsError::Unsupported)?;
         if end > sector_size {
             return Err(VfsError::Unsupported);
         }

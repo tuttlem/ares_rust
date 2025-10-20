@@ -118,6 +118,10 @@ fn ticker_sequence() -> Result<(), &'static str> {
     syscall::write(fd, b"discard").map_err(|_| "write /dev/null")?;
     syscall::close(fd).map_err(|_| "close /dev/null")?;
 
+    // STDOUT echo
+    syscall::write(syscall::fd::STDOUT, b"[test] console\n")
+        .map_err(|_| "write stdout")?;
+
     // /dev/zero read
     let fd = syscall::open("/dev/zero").map_err(|_| "open /dev/zero")? as u64;
     let mut buf = [0xAAu8; 16];

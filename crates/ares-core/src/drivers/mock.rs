@@ -8,7 +8,11 @@ pub struct MemBlockDevice {
 
 impl MemBlockDevice {
     pub fn new(name: &'static str, data: Vec<u8>, block_size: usize) -> Self {
-        assert_eq!(data.len() % block_size, 0, "backing must align to block size");
+        assert_eq!(
+            data.len() % block_size,
+            0,
+            "backing must align to block size"
+        );
         Self {
             name,
             block: block_size,

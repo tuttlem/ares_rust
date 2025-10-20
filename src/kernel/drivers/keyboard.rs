@@ -44,8 +44,9 @@ impl CharDevice for Keyboard {
                 return Ok(count);
             }
 
-            process::block_current(WaitChannel::KeyboardInput)
-                .map_err(|_| DriverError::IoError)?;
+            if let Err(err) = process::block_current(WaitChannel::KeyboardInput) {
+                return Err(DriverError::IoError);
+            }
         }
     }
 

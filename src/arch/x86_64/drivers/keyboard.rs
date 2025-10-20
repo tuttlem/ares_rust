@@ -33,6 +33,13 @@ impl KeyboardState {
     fn push(&mut self, byte: u8) {
         if self.is_full() {
             // drop oldest value to make room
+            let dropped = self.buffer[self.head];
+            klog!(
+                "[keyboard] buffer full, dropping oldest byte 0x{:02X} head={} tail={}\n",
+                dropped,
+                self.head,
+                self.tail
+            );
             self.head = (self.head + 1) % BUFFER_SIZE;
         }
         self.buffer[self.tail] = byte;
@@ -75,17 +82,12 @@ pub fn read(buf: &mut [u8]) -> usize {
     }
 
     let mut state = STATE.lock();
-    let mut count = 0;
-    while count < buf.len() {
-        match state.pop() {
-            Some(byte) => {
-                buf[count] = byte;
-                count += 1;
-            }
-            None => break,
-        }
+    if let Some(byte) = state.pop() {
+        buf[0] = byte;
+        1
+    } else {
+        0
     }
-    count
 }
 
 fn keyboard_handler(_frame: &mut InterruptFrame) {

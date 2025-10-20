@@ -1,4 +1,5 @@
 use core::hint::spin_loop;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::x86_64::io::{inb, outb};
 
@@ -10,6 +11,10 @@ const FIFO_CONTROL: u16 = COM1_PORT + 2;
 const LINE_CONTROL: u16 = COM1_PORT + 3;
 const MODEM_CONTROL: u16 = COM1_PORT + 4;
 const LINE_STATUS: u16 = COM1_PORT + 5;
+
+const SERIAL_SPIN_LIMIT: usize = 100_000;
+
+static SERIAL_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub(crate) fn init() {
     unsafe {
@@ -27,6 +32,10 @@ pub(crate) fn init() {
 }
 
 pub(crate) fn write_byte(byte: u8) {
+    if !SERIAL_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
     if byte == b'\n' {
         transmit(b'\r');
     }
@@ -34,8 +43,18 @@ pub(crate) fn write_byte(byte: u8) {
 }
 
 fn transmit(byte: u8) {
+    if !SERIAL_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let mut spins = 0;
     while !is_transmit_empty() {
         spin_loop();
+        spins += 1;
+        if spins >= SERIAL_SPIN_LIMIT {
+            SERIAL_ENABLED.store(false, Ordering::Relaxed);
+            return;
+        }
     }
 
     unsafe {

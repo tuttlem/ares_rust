@@ -122,12 +122,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
         timer::init();
 
-        process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
-        process::spawn_kernel_process("ticker_a", ticker_task_a).expect("spawn ticker_a");
-        process::spawn_kernel_process("ticker_b", ticker_task_b).expect("spawn ticker_b");
-        process::spawn_kernel_process("ticker_c", ticker_task_c).expect("spawn ticker_c");
-        process::spawn_kernel_process("dump_all", dump_all).expect("dump_all");
-        process::spawn_kernel_process("parent", parent_task).expect("spawn parent");
+    process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
 
         interrupts::enable();
 
@@ -158,106 +153,6 @@ extern "C" fn init_shell_task() -> ! {
             }
         }
         process::yield_now();
-    }
-}
-
-extern "C" fn ticker_task_a() -> ! {
-    vfs_smoke_checks();
-    ticker_loop("A", b"[ticker-A] heartbeat\n")
-}
-
-extern "C" fn ticker_task_b() -> ! {
-    ticker_loop("B", b"[ticker-B] heartbeat\n")
-}
-
-extern "C" fn ticker_task_c() -> ! {
-    ticker_loop("C", b"[ticker-C] heartbeat\n")
-}
-
-fn ticker_loop(_name: &'static str, stdout_msg: &'static [u8]) -> ! {
-    let mut counter: u64 = 0;
-    loop {
-        counter = counter.wrapping_add(1);
-        /*
-        klog!(
-            "[ticker-{name}] heartbeat count={} tick={}\n",
-            counter,
-            timer::ticks()
-        );
-        */
-        if counter % 32 == 0 {
-            let _ = syscall::write(syscall::fd::STDOUT, stdout_msg);
-        }
-        for _ in 0..5_000 {
-            core::hint::spin_loop();
-        }
-        syscall::yield_now();
-    }
-}
-
-extern "C" fn dump_all() -> ! {
-    let mut counter: u64 = 0;
-    loop {
-        counter = counter.wrapping_add(1);
-        if counter % 5_500 == 0 {
-            process::dump_all_processes();
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-        process::yield_now();
-    }
-}
-
-extern "C" fn parent_task() -> ! {
-    let mut iteration: u64 = 0;
-    loop {
-        iteration = iteration.wrapping_add(1);
-        let child_pid = match process::spawn_kernel_process("worker", worker_task) {
-            Ok(pid) => pid,
-            Err(err) => {
-                klog!("[parent] failed to spawn worker: {:?}\n", err);
-                process::yield_now();
-                continue;
-            }
-        };
-
-        klog!("[parent] spawned worker pid={} iteration={}\n", child_pid, iteration);
-
-        match process::wait_for_child(Some(child_pid)) {
-            Ok((pid, code)) => {
-                klog!("[parent] worker pid={} exit_code={}\n", pid, code);
-            }
-            Err(err) => {
-                klog!("[parent] wait failed: {:?}\n", err);
-            }
-        }
-
-        process::yield_now();
-    }
-}
-
-extern "C" fn worker_task() -> ! {
-    let mut iterations: u32 = 0;
-    let msg = b"[worker] tick\n";
-    loop {
-        if iterations >= 3 {
-            syscall::exit(0);
-        }
-        iterations += 1;
-        klog!(
-            "[worker] tick iteration={} pid={:?} tick={}\n",
-            iterations,
-            process::current_pid(),
-            timer::ticks()
-        );
-        if iterations % 2 == 1 {
-            let _ = syscall::write(syscall::fd::STDOUT, msg);
-        }
-        for _ in 0..15_000 {
-            core::hint::spin_loop();
-        }
-        syscall::yield_now();
     }
 }
 

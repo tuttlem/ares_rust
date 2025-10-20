@@ -125,6 +125,12 @@ extern "C" fn process_exit() -> ! {
 
 extern "C" fn idle_task() -> ! {
     loop {
+        if NEED_RESCHED.swap(false, Ordering::AcqRel) {
+            if schedule_internal() {
+                continue;
+            }
+        }
+
         unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
     }
 }
