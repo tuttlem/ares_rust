@@ -31,6 +31,11 @@ OUTPUT_ISO ?= dist/x86_64/kernel.iso
 KERNEL_CFG ?=
 ISO_ROOT   ?= targets/x86_64/iso
 
+HDD_IMAGE        := dist/x86_64/hda.img
+HDD_SIZE         := 64M
+FAT_START_LBA    := 4096
+FAT_OFFSET_BYTES := 2097152
+
 arch_kernel_source_dir        := src/arch/x86_64/kernel
 arch_kernel_build_dir         := build/arch/x86_64/kernel
 arch_kernel_asm_source_files  := $(shell find $(arch_kernel_source_dir) -name "*.asm" 2>/dev/null)
@@ -51,6 +56,10 @@ user-bins:
 	cargo build --release --target $(RUST_TARGET) --manifest-path $(USER_TARGET)/Cargo.toml
 	mkdir -p $(ISO_ROOT)/bin
 	cp $(USER_BIN) $(ISO_ROOT)/bin/hello
+	mkdir -p $(dir $(HDD_IMAGE))
+	truncate -s $(HDD_SIZE) $(HDD_IMAGE)
+	mkfs.fat --offset=$(FAT_START_LBA) -F 16 -n ARESFAT $(HDD_IMAGE)
+	mcopy -o -i $(HDD_IMAGE)@@$(FAT_OFFSET_BYTES) $(USER_BIN) ::HELLO
 
 $(boot_asm_object_files): $(boot_build_dir)/%.o : $(boot_source_dir)/%.asm
 	mkdir -p $(dir $@) && \
