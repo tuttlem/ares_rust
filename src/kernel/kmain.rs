@@ -127,12 +127,13 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
 
+        /*
         if let Err(err) = process::spawn_user_process("hello", "/bin/hello") {
             klog!("[kmain] failed to spawn user process: {:?}\n", err);
         } else {
             klog!("[kmain] started user process '/bin/hello'\n");
         }
-
+*/
         interrupts::enable();
 
         process::start_scheduler();

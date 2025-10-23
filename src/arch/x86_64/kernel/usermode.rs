@@ -1,3 +1,5 @@
+mod entry;
+
 extern "C" {
     pub fn enter_user_mode() -> !;
 }

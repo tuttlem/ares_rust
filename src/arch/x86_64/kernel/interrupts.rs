@@ -3,6 +3,7 @@
 use core::mem::size_of;
 
 use crate::klog;
+mod stubs;
 use super::mmu;
 
 type InterruptHandler = fn(&mut InterruptFrame);

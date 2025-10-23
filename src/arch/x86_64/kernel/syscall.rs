@@ -1,6 +1,7 @@
 #![cfg(target_arch = "x86_64")]
 
 extern crate alloc;
+mod entry;
 
 use alloc::vec;
 use crate::drivers::DriverError;
