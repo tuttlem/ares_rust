@@ -5,6 +5,7 @@ use core::mem::size_of;
 use crate::klog;
 mod stubs;
 use super::mmu;
+use arch::x86_64::qemu;
 
 type InterruptHandler = fn(&mut InterruptFrame);
 
@@ -302,6 +303,7 @@ pub fn disable_vector(vector: u8) {
 
 fn default_handler(frame: &mut InterruptFrame) {
     klog!("[interrupts] Unhandled vector {} err=0x{:X}\n", frame.int_no, frame.err_code);
+    qemu::exit_failure();
 }
 
 fn page_fault_handler(frame: &mut InterruptFrame) {
@@ -326,6 +328,8 @@ fn page_fault_handler(frame: &mut InterruptFrame) {
         reserved,
         instruction
     );
+
+    qemu::exit_failure();
 }
 
 fn general_protection_handler(frame: &mut InterruptFrame) {
@@ -347,6 +351,8 @@ fn general_protection_handler(frame: &mut InterruptFrame) {
             klog!("[gpf] dumped process {}\n", pid);
         }
     }
+
+    qemu::exit_failure();
 }
 
 fn ata_primary_irq(frame: &mut InterruptFrame) {
@@ -391,6 +397,8 @@ fn invalid_opcode_handler(frame: &mut InterruptFrame) {
             klog!("[invop] dumped process {}\n", pid);
         }
     }
+
+    qemu::exit_failure();
 }
 
 #[no_mangle]

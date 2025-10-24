@@ -124,17 +124,16 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     }
 
         timer::init();
+        interrupts::enable();
 
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
 
-        /*
         if let Err(err) = process::spawn_user_process("hello", "/bin/hello") {
             klog!("[kmain] failed to spawn user process: {:?}\n", err);
         } else {
             klog!("[kmain] started user process '/bin/hello'\n");
         }
-*/
-        interrupts::enable();
+
 
         process::start_scheduler();
     }
@@ -265,8 +264,7 @@ fn vfs_smoke_checks() {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     klog::writeln("[kpanic] Kernel panic!");
-    klog!("[kpanic] {}
-", info);
+    klog!("[kpanic] {}\n", info);
 
     loop {
         spin_loop();

@@ -1216,6 +1216,15 @@ pub fn wake_channel(event: WaitChannel) {
 
 #[cfg(target_arch = "x86_64")]
 pub fn request_preempt(frame: &mut InterruptFrame) {
+    /** TODO: add logs at every step here to work out where the failure is */
+
+    klog!(
+        "[request_preempt] request received rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
+        frame.rip,
+        frame.cs,
+        frame.rflags
+    );
+
     NEED_RESCHED.store(true, Ordering::Release);
 
     const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
@@ -1229,15 +1238,15 @@ pub fn request_preempt(frame: &mut InterruptFrame) {
     const KERNEL_TOP_BITS: u64 = 0xFFFF;
     if (rip >> 48) != KERNEL_TOP_BITS {
         let _pid_for_log = current_pid().unwrap_or(0);
-        /*
+
         klog!(
             "[request_preempt] non-canonical rip pid={} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
-            pid_for_log,
+            _pid_for_log,
             rip,
             frame.cs,
             frame.rflags
         );
-        */
+
 
         unsafe {
             let raw = frame as *const InterruptFrame as *const u64;
@@ -1300,19 +1309,22 @@ pub extern "C" fn preempt_do_switch() -> u64 {
     let target = process
         .take_preempt_return()
         .unwrap_or(process.context.rip);
-        /*
+
     klog!(
         "[preempt] resume pid={} target_rip=0x{:016X} context_rip=0x{:016X}\n",
         pid,
         target,
         process.context.rip
     );
-    */
+
     target
 }
 
 pub fn exit_current(exit_code: i32) -> ! {
     let pid = current_pid().expect("exit_current requires a running process");
+
+    klog!("[process] exit request for pid {} as {}", pid, exit_code);
+
     let parent = {
         let mut table = PROCESS_TABLE.lock();
         let process = table
@@ -1393,6 +1405,7 @@ pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
 }
 
 fn schedule_internal() -> bool {
+    klog!("[sched] here\n");
     let (current_ctx, next_ctx, current_space, next_space, next_pid) = {
         let mut table = PROCESS_TABLE.lock();
         if table.len == 0 {

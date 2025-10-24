@@ -106,7 +106,7 @@ _entry:
 
    mov dword [pd +  0], 0x000083              ; map the zero page temporarily
 
-   ; Map first 8 MiB for the kernel (higher-half mapping reuses these entries)
+   ; Map first 1 GiB for the kernel (higher-half mapping reuses these entries)
    mov   ecx, 0                                ; entry index
 .map_kernel_pages:
    mov   eax, ecx
@@ -114,7 +114,7 @@ _entry:
    or    eax, 0x83                             ; present, writable, large page
    mov   [pd + ecx * 8], eax
    inc   ecx
-   cmp   ecx, 4                                ; 4 entries -> 8 MiB
+   cmp   ecx, 512                              ; map 1 GiB of physical memory
    jl    .map_kernel_pages
 
 

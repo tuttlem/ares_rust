@@ -31,6 +31,7 @@ pub fn ticks() -> u64 {
 fn timer_handler(frame: &mut interrupts::InterruptFrame) {
     let tick = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     if tick % PREEMPT_SLICE_TICKS == 0 {
+        klog!("[timer] Prescaler tick: {}\n", tick);
         process::request_preempt(frame);
     }
 }
