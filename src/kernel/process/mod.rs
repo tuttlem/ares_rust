@@ -1168,11 +1168,15 @@ pub fn spawn_idle_process(name: &'static str, entry: ProcessEntry) -> Result<Pid
 }
 
 pub fn start_scheduler() -> ! {
+    klog!("[process] starting scheduler\n");
+
     loop {
         if !schedule_internal() {
             core::hint::spin_loop();
         }
     }
+
+    klog!("[process] exiting scheduler\n");
 }
 
 pub fn yield_now() {
@@ -1216,15 +1220,6 @@ pub fn wake_channel(event: WaitChannel) {
 
 #[cfg(target_arch = "x86_64")]
 pub fn request_preempt(frame: &mut InterruptFrame) {
-    /** TODO: add logs at every step here to work out where the failure is */
-
-    klog!(
-        "[request_preempt] request received rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
-        frame.rip,
-        frame.cs,
-        frame.rflags
-    );
-
     NEED_RESCHED.store(true, Ordering::Release);
 
     const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
@@ -1239,20 +1234,10 @@ pub fn request_preempt(frame: &mut InterruptFrame) {
     if (rip >> 48) != KERNEL_TOP_BITS {
         let _pid_for_log = current_pid().unwrap_or(0);
 
-        klog!(
-            "[request_preempt] non-canonical rip pid={} rip=0x{:016X} cs=0x{:X} rflags=0x{:016X}\n",
-            _pid_for_log,
-            rip,
-            frame.cs,
-            frame.rflags
-        );
-
-
         unsafe {
             let raw = frame as *const InterruptFrame as *const u64;
             for i in 0..8 {
                 let _word = core::ptr::read(raw.add(i));
-                //klog!("[request_preempt] stack[{i}] = 0x{:016X}\n", word);
             }
         }
 
@@ -1405,7 +1390,6 @@ pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
 }
 
 fn schedule_internal() -> bool {
-    klog!("[sched] here\n");
     let (current_ctx, next_ctx, current_space, next_space, next_pid) = {
         let mut table = PROCESS_TABLE.lock();
         if table.len == 0 {
@@ -1599,6 +1583,7 @@ pub fn init_pid() -> Option<Pid> {
 }
 
 pub fn current_pid() -> Option<Pid> {
+
     match CURRENT_PID.load(Ordering::Acquire) {
         0 => None,
         pid => Some(pid as Pid),

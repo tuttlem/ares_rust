@@ -92,6 +92,7 @@ _entry:
    mov   eax, pdpt
    or    eax, 1                               ; mark as "present"
    mov   [pml4], eax                          ; Pml4[0] -> Pdpt
+   mov   [pml4 + 0x800], eax                  ; Pml4[0x100] -> Pdpt (direct map window)
    mov   [pml4 + 0xFF8], eax                  ; make the last entry of the pml4
                                               ; point to the beginning of the
                                               ; table

@@ -52,6 +52,13 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     mem::phys::init(info_addr);
     heap::init();
 
+    #[cfg(not(kernel_test))]
+    {
+        let cr3 = unsafe { arch::x86_64::kernel::mmu::read_cr3() } as usize;
+        let pml4_entry = unsafe { *((cr3 + 256 * core::mem::size_of::<u64>()) as *const u64) };
+        klog!("[debug] pml4[256]=0x{:016X}\n", pml4_entry);
+    }
+
     #[cfg(kernel_test)]
     tests::run(info_addr);
 
@@ -124,15 +131,17 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
     }
 
         timer::init();
-        interrupts::enable();
 
     process::spawn_kernel_process("init", init_shell_task).expect("spawn init");
-
+/*
         if let Err(err) = process::spawn_user_process("hello", "/bin/hello") {
             klog!("[kmain] failed to spawn user process: {:?}\n", err);
         } else {
             klog!("[kmain] started user process '/bin/hello'\n");
         }
+
+ */
+        interrupts::enable();
 
 
         process::start_scheduler();
