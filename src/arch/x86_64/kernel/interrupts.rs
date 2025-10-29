@@ -190,7 +190,10 @@ pub mod vectors {
 
 const IDT_ENTRIES: usize = 256;
 
-static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::missing(); IDT_ENTRIES];
+#[repr(align(16))]
+struct AlignedIdt([IdtEntry; IDT_ENTRIES]);
+
+static mut IDT: AlignedIdt = AlignedIdt([IdtEntry::missing(); IDT_ENTRIES]);
 static mut HANDLERS: [InterruptHandler; IDT_ENTRIES] = [default_handler; IDT_ENTRIES];
 
 #[link_section = ".data"]
@@ -258,6 +261,23 @@ pub fn init() {
         setup_idt();
         pic::remap(32, 40);
         load_idt();
+    }
+
+    unsafe {
+        let base = core::ptr::addr_of!(IDT.0) as *const u8;
+        let offset = 32 * core::mem::size_of::<IdtEntry>();
+        let lower = (base.add(offset) as *const u64).read_unaligned();
+        let upper = (base.add(offset + 8) as *const u64).read_unaligned();
+        let type_attr = base.add(offset + 5).read();
+        let _ = klog::write_fmt(format_args!(
+            "[idt] vector32 lower=0x{:016X} upper=0x{:016X} type=0x{:02X}\n",
+            lower,
+            upper,
+            type_attr
+        ));
+        if type_attr & 0x80 == 0 {
+            klog::writeln("[idt] vector32 not present\n");
+        }
     }
 
     klog::writeln("[interrupts] IDT loaded");
@@ -433,7 +453,7 @@ unsafe fn setup_idt() {
     ];
 
     for (index, handler) in isr_handlers.iter().enumerate() {
-        IDT[index].set_handler(*handler, GDT_KERNEL_CODE, IDT_TYPE_ATTR, 0);
+        IDT.0[index].set_handler(*handler, GDT_KERNEL_CODE, IDT_TYPE_ATTR, 0);
     }
 
     register_handler(vectors::PAGE_FAULT, page_fault_handler);
@@ -444,11 +464,11 @@ unsafe fn setup_idt() {
 
     for (i, handler) in irq_handlers.iter().enumerate() {
         let index = 32 + i;
-        IDT[index].set_handler(*handler, GDT_KERNEL_CODE, IDT_TYPE_ATTR, 0);
+        IDT.0[index].set_handler(*handler, GDT_KERNEL_CODE, IDT_TYPE_ATTR, 0);
     }
 
     IDTR.limit = (size_of::<IdtEntry>() * IDT_ENTRIES - 1) as u16;
-    IDTR.base = core::ptr::addr_of!(IDT) as u64;
+    IDTR.base = core::ptr::addr_of!(IDT.0) as u64;
 }
 
 unsafe fn load_idt() {

@@ -90,7 +90,7 @@ _entry:
    mov   esp, _stack
 
    mov   eax, pdpt
-   or    eax, 1                               ; mark as "present"
+   or    eax, 3                               ; present + writable
    mov   [pml4], eax                          ; Pml4[0] -> Pdpt
    mov   [pml4 + 0x800], eax                  ; Pml4[0x100] -> Pdpt (direct map window)
    mov   [pml4 + 0xFF8], eax                  ; make the last entry of the pml4
@@ -98,7 +98,7 @@ _entry:
                                               ; table
 
    mov   eax, pd
-   or    eax, 1                               ; mark as "present"
+   or    eax, 3                               ; present + writable
    mov   [pdpt], eax                          ; Pdpt[0] -> Pd
    mov   [pdpt + 0xFF0], eax                  ; make the last entry of the pdpt
                                               ; point to the beginning of the
@@ -185,18 +185,20 @@ gdt_tab:
    DQ    0x0000000000000000
    DQ    0x00A09A0000000000
    DQ    0x00A0920000000000
+   DQ    0x00A0FA0000000000
+   DQ    0x00A0F20000000000
 
 gdt_1:
    DW    23
    DD    gdt_tab
 
 gdt_2:
-   DW    23
+   DW    39
    DD    gdt_tab + 24
    DD    0
 
 gdt_3:
-   DW    23
+   DW    39
    DQ    gdt_tab + 24 + KERNEL_VMA_OFFSET
 
 

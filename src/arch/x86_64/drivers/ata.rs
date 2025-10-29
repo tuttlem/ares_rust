@@ -97,6 +97,7 @@ impl AtaPrimaryMaster {
 
         let mut status = unsafe { inb(self.io_base() + REG_STATUS) };
         if status == 0 {
+            klog!("[ata] identify status=0 (no device), treating as absent\n");
             return Err(DriverError::Unsupported);
         }
 
@@ -218,6 +219,10 @@ impl Driver for AtaPrimaryMaster {
             Ok(()) => {
                 klog!("[ata] primary master ready\n");
                 Ok(())
+            }
+            Err(DriverError::Unsupported) => {
+                klog!("[ata] primary master not present (IDENTIFY unsupported)\n");
+                Err(DriverError::Unsupported)
             }
             Err(err) => {
                 klog!("[ata] identify failed: {:?}\n", err);

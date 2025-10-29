@@ -1,3 +1,4 @@
+use crate::klog;
 use crate::mem::phys;
 
 use super::mmu;
@@ -34,6 +35,11 @@ fn allocate_table() -> Result<(u64, &'static mut PageTable), MapError> {
     for entry in table.iter_mut() {
         *entry = 0;
     }
+    klog!(
+        "[paging] allocate_table frame=0x{:016X} virt=0x{:016X}\n",
+        phys,
+        mmu::phys_to_virt(phys)
+    );
     Ok((phys, table))
 }
 
@@ -56,9 +62,19 @@ fn ensure_table(entry: &mut u64, user: bool) -> Result<&'static mut PageTable, M
             flags |= FLAG_USER;
         }
         *entry = phys | flags;
+        klog!(
+            "[paging] ensure_table new table phys=0x{:016X} flags=0x{:X}\n",
+            phys,
+            flags
+        );
         Ok(table)
     } else {
         let phys = *entry & ENTRY_ADDR_MASK;
+        klog!(
+            "[paging] ensure_table existing table phys=0x{:016X} flags=0x{:X}\n",
+            phys,
+            *entry & !ENTRY_ADDR_MASK
+        );
         Ok(table_from_phys(phys))
     }
 }
@@ -89,6 +105,13 @@ pub fn map_page(
     frame_phys: u64,
     flags: u64,
 ) -> Result<(), MapError> {
+    klog!(
+        "[paging] map_page enter pml4=0x{:016X} virt=0x{:016X} frame=0x{:016X} flags=0x{:X}\n",
+        pml4_phys,
+        virt_addr,
+        frame_phys,
+        flags
+    );
     if virt_addr & 0xFFF != 0 || frame_phys & 0xFFF != 0 {
         return Err(MapError::AlreadyMapped);
     }
@@ -98,18 +121,33 @@ pub fn map_page(
     let pml4 = table_from_phys(pml4_phys);
     let pml4e = &mut pml4[pml4_index(virt_addr)];
     let pdpt = ensure_table(pml4e, user)?;
+    klog!(
+        "[paging] map_page pml4 idx={} entry=0x{:016X}\n",
+        pml4_index(virt_addr),
+        *pml4e
+    );
 
     let pdpte = &mut pdpt[pdpt_index(virt_addr)];
     let pd = ensure_table(pdpte, user)?;
     if *pdpte & FLAG_HUGE != 0 {
         return Err(MapError::AlreadyMapped);
     }
+    klog!(
+        "[paging] map_page pdpt idx={} entry=0x{:016X}\n",
+        pdpt_index(virt_addr),
+        *pdpte
+    );
 
     let pde = &mut pd[pd_index(virt_addr)];
     let pt = ensure_table(pde, user)?;
     if *pde & FLAG_HUGE != 0 {
         return Err(MapError::AlreadyMapped);
     }
+    klog!(
+        "[paging] map_page pd idx={} entry=0x{:016X}\n",
+        pd_index(virt_addr),
+        *pde
+    );
 
     let pte = &mut pt[pt_index(virt_addr)];
     if *pte & FLAG_PRESENT != 0 {
@@ -117,6 +155,11 @@ pub fn map_page(
     }
 
     *pte = frame_phys | (flags | FLAG_PRESENT);
+    klog!(
+        "[paging] map_page pte idx={} set to=0x{:016X}\n",
+        pt_index(virt_addr),
+        *pte
+    );
     Ok(())
 }
 

@@ -40,6 +40,7 @@ struct FatVolume {
 
 impl FatVolume {
     fn load(device: &'static dyn BlockDevice, start_lba: u64) -> Result<Self, FatError> {
+        klog!("[fat] load volume start_lba={} device='{}'\n", start_lba, device.name());
         let mut sector = [0u8; SECTOR_SIZE];
         device
             .read_blocks(start_lba, &mut sector)
@@ -47,6 +48,11 @@ impl FatVolume {
 
         let bytes_per_sector = u16::from_le_bytes([sector[11], sector[12]]) as usize;
         if bytes_per_sector != SECTOR_SIZE {
+            klog!(
+                "[fat] unexpected bytes/sector: {} (expected {})\n",
+                bytes_per_sector,
+                SECTOR_SIZE
+            );
             return Err(FatError::Io);
         }
 
@@ -60,6 +66,16 @@ impl FatVolume {
         let root_dir_lba = fat_lba + (num_fats as u64 * sectors_per_fat as u64);
         let root_dir_sectors = ((root_entries as u32 * 32) + (bytes_per_sector as u32 - 1)) / bytes_per_sector as u32;
         let data_lba = root_dir_lba + root_dir_sectors as u64;
+
+        klog!(
+            "[fat] bpb bytes_per_sector={} spc={} reserved={} fats={} root_entries={} spf={}\n",
+            bytes_per_sector,
+            sectors_per_cluster,
+            reserved_sectors,
+            num_fats,
+            root_entries,
+            sectors_per_fat
+        );
 
         Ok(Self {
             device,
@@ -78,14 +94,66 @@ impl FatVolume {
         })
     }
 
+    fn find_root_file(&self, path: &str) -> Result<(u16, u32), FatError> {
+        let short_name = format_short_name(path).ok_or(FatError::InvalidPath)?;
+        klog!("[fat] find_root_file path='{}' short={:02X?}\n", path, short_name);
+
+        let entries_per_sector = self.bytes_per_sector / 32;
+        let mut sector_buffer = [0u8; SECTOR_SIZE];
+
+        for sector_index in 0..self.root_dir_sectors {
+            let lba = self.root_dir_lba + sector_index as u64;
+            klog!("[fat] scanning root sector {} lba={}\n", sector_index, lba);
+            self.read_sector(lba, &mut sector_buffer)?;
+
+            for entry_index in 0..entries_per_sector {
+                let offset = entry_index * 32;
+                let entry = &sector_buffer[offset..offset + 32];
+                let first = entry[0];
+                if first == 0x00 {
+                    klog!("[fat] directory terminator reached\n");
+                    return Err(FatError::NotFound);
+                }
+                if first == 0xE5 || entry[11] == 0x0F {
+                    continue;
+                }
+                if entry[11] & 0x08 != 0 || entry[11] & 0x10 != 0 {
+                    continue;
+                }
+                if entry[..SHORT_NAME_LEN] != short_name {
+                    continue;
+                }
+
+                let start_cluster = u16::from_le_bytes([entry[26], entry[27]]);
+                let size = u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]);
+                klog!(
+                    "[fat] found entry sector={} index={} cluster={} size={}\n",
+                    sector_index,
+                    entry_index,
+                    start_cluster,
+                    size
+                );
+                return Ok((start_cluster, size));
+            }
+        }
+
+        klog!("[fat] file '{}' not found in root\n", path);
+        Err(FatError::NotFound)
+    }
+
     fn read_sector(&self, lba: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), FatError> {
         self.device
             .read_blocks(lba, buffer)
-            .map_err(|_| FatError::Io)
+            .map_err(|_| {
+                klog!("[fat] read_sector IO error lba={}\n", lba);
+                FatError::Io
+            })
     }
 
     fn cluster_to_lba(&self, cluster: u16) -> u64 {
-        self.data_lba + ((cluster as u64 - 2) * self.sectors_per_cluster as u64)
+        let lba = self.data_lba + ((cluster as u64 - 2) * self.sectors_per_cluster as u64);
+        klog!("[fat] cluster_to_lba cluster={} -> lba={}\n", cluster, lba);
+        lba
     }
 
     fn next_cluster(&self, cluster: u16) -> Result<Option<u16>, FatError> {
@@ -101,6 +169,12 @@ impl FatVolume {
             sector[offset_within],
             sector[offset_within + 1],
         ]);
+        klog!(
+            "[fat] next_cluster cluster={} fat_lba={} entry=0x{:04X}\n",
+            cluster,
+            fat_lba,
+            entry
+        );
 
         if entry >= FAT16_END {
             Ok(None)
@@ -125,6 +199,14 @@ impl FatVolume {
                 None => return Ok(None),
             }
         }
+
+        klog!(
+            "[fat] cluster_for_offset start={} -> cluster={} offset={}\n",
+            start_cluster,
+            cluster,
+            offset
+        );
+
         Ok(Some((cluster, offset)))
     }
 
@@ -139,6 +221,13 @@ impl FatVolume {
         let mut cluster_offset = offset;
         let bytes_per_sector = self.bytes_per_sector;
         let sectors_per_cluster = self.sectors_per_cluster as usize;
+
+        klog!(
+            "[fat] read_cluster_slice cluster={} offset={} len={}\n",
+            cluster,
+            offset,
+            dest.len()
+        );
 
         for sector_index in cluster_offset / bytes_per_sector..sectors_per_cluster {
             if remaining == 0 {
@@ -163,41 +252,6 @@ impl FatVolume {
         }
 
         Ok(())
-    }
-
-    fn find_root_file(&self, path: &str) -> Result<(u16, u32), FatError> {
-        let short_name = format_short_name(path).ok_or(FatError::InvalidPath)?;
-        let entries_per_sector = self.bytes_per_sector / 32;
-        let mut sector_buffer = [0u8; SECTOR_SIZE];
-
-        for sector_index in 0..self.root_dir_sectors {
-            let lba = self.root_dir_lba + sector_index as u64;
-            self.read_sector(lba, &mut sector_buffer)?;
-
-            for entry_index in 0..entries_per_sector {
-                let offset = entry_index * 32;
-                let entry = &sector_buffer[offset..offset + 32];
-                let first = entry[0];
-                if first == 0x00 {
-                    return Err(FatError::NotFound);
-                }
-                if first == 0xE5 || entry[11] == 0x0F {
-                    continue;
-                }
-                if entry[11] & 0x08 != 0 || entry[11] & 0x10 != 0 {
-                    continue;
-                }
-                if entry[..SHORT_NAME_LEN] != short_name {
-                    continue;
-                }
-
-                let start_cluster = u16::from_le_bytes([entry[26], entry[27]]);
-                let size = u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]);
-                return Ok((start_cluster, size));
-            }
-        }
-
-        Err(FatError::NotFound)
     }
 }
 
@@ -266,7 +320,19 @@ impl VfsFile for FatFile {
 static FAT_VOLUME: SpinLock<Option<FatVolume>> = SpinLock::new(None);
 
 pub fn mount(device: &'static dyn BlockDevice, start_lba: u64) -> Result<(), FatError> {
-    let volume = FatVolume::load(device, start_lba)?;
+    klog!(
+        "[fat] mount request device='{}' start_lba={}\n",
+        device.name(),
+        start_lba
+    );
+
+    let volume = match FatVolume::load(device, start_lba) {
+        Ok(volume) => volume,
+        Err(err) => {
+            klog!("[fat] mount failed during load: {:?}\n", err);
+            return Err(err);
+        }
+    };
     let mut slot = FAT_VOLUME.lock();
     *slot = Some(volume);
     klog!("[fat] mounted at LBA {}\n", start_lba);
@@ -279,10 +345,19 @@ pub fn open_file(path: &str) -> Result<&'static dyn VfsFile, FatError> {
         return Err(FatError::InvalidPath);
     }
 
+    klog!("[fat] open_file path='{}' trimmed='{}'\n", path, trimmed);
+
     let (volume_ptr, entry) = {
         let guard = FAT_VOLUME.lock();
         let volume = guard.as_ref().ok_or(FatError::NotMounted)?;
-        let info = volume.find_root_file(trimmed)?;
+        klog!("[fat] open_file volume OK data_lba={} root_dir_sectors={}\n", volume.data_lba, volume.root_dir_sectors);
+        let info = match volume.find_root_file(trimmed) {
+            Ok(info) => info,
+            Err(err) => {
+                klog!("[fat] open_file find_root_file error {:?}\n", err);
+                return Err(err);
+            }
+        };
         (volume as *const FatVolume, info)
     };
 
@@ -292,6 +367,12 @@ pub fn open_file(path: &str) -> Result<&'static dyn VfsFile, FatError> {
         start_cluster: entry.0,
         size: entry.1,
     };
+
+    klog!(
+        "[fat] open_file found cluster={} size={} bytes\n",
+        file.start_cluster,
+        file.size
+    );
 
     let layout = Layout::new::<FatFile>();
     let raw = unsafe { heap::allocate(layout) } as *mut FatFile;

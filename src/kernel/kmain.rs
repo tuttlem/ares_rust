@@ -64,6 +64,8 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
     #[cfg(not(kernel_test))]
     {
+        arch::x86_64::kernel::gdt::init();
+
         drivers::init();
 
         let vendor_raw = cpu::vendor_string();
@@ -89,17 +91,22 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
 
         drivers::register_builtin();
         drivers::list_drivers();
-        if let Some(ata_dev) = drivers::block_device_by_name("ata0-master") {
-            unsafe {
-                let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
-                klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+        klog!("[vfs] probing for block device 'ata0-master'\n");
+        match drivers::block_device_by_name("ata0-master") {
+            Some(ata_dev) => {
+                klog!("[vfs] ata0-master present; attempting mount\n");
+                unsafe {
+                    let file = AtaScratchFile::init(ata_dev, 2048, "ata0-scratch");
+                    klog!("[vfs] scratch file '{}' mounted at LBA {}\n", file.name(), 2048);
+                }
+                match fs::fat::mount(ata_dev, FAT_START_LBA) {
+                    Ok(()) => klog!("[fat] mounted volume at LBA {}\n", FAT_START_LBA),
+                    Err(err) => klog!("[fat] mount failed: {:?}\n", err),
+                }
             }
-            match fs::fat::mount(ata_dev, FAT_START_LBA) {
-                Ok(()) => klog!("[fat] mounted volume at LBA {}\n", FAT_START_LBA),
-                Err(err) => klog!("[fat] mount failed: {:?}\n", err),
+            None => {
+                klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
             }
-        } else {
-            klog!("[vfs] ata0-master unavailable; scratch file not initialised\n");
         }
         process::init().expect("process init");
         syscall::init();
@@ -139,8 +146,7 @@ pub extern "C" fn kmain(multiboot_info: *const c_void, multiboot_magic: u32) -> 
         } else {
             klog!("[kmain] started user process '/bin/hello'\n");
         }
-
- */
+*/
         interrupts::enable();
 
 

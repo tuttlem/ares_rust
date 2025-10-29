@@ -336,6 +336,14 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
         return 0;
     }
 
+    klog!(
+        "[syscall] write pid={:?} fd={} buf=0x{:016X} len={}\n",
+        process::current_pid(),
+        fd,
+        buf_ptr,
+        len
+    );
+
     if buf_ptr == 0 {
         return ERR_FAULT;
     }
@@ -393,6 +401,7 @@ fn sys_yield() -> u64 {
 }
 
 fn sys_exit(code: u64) -> u64 {
+    klog!("[syscall] exit pid={:?} code={}\n", process::current_pid(), code);
     let status = (code & 0xFFFF_FFFF) as i32;
     process::exit_current(status);
 }

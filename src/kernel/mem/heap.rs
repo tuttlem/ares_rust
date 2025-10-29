@@ -2,16 +2,16 @@
 
 use core::alloc::Layout;
 use core::mem::{align_of, size_of};
-use core::ptr::{self, copy_nonoverlapping, null_mut, NonNull};
+use core::ptr::{self, copy, null_mut, NonNull};
 use core::ops::{Deref, DerefMut};
 
 use crate::interrupts;
 use crate::klog;
 use crate::sync::spinlock::SpinLock;
 
-const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB temporary heap
+pub const HEAP_SIZE: usize = 8 * 1024 * 1024; // 8 MiB temporary heap
 
-static mut HEAP_SPACE: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+pub(crate) static mut HEAP_SPACE: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 static ALLOCATOR: SpinLock<LinkedListAllocator> = SpinLock::new(LinkedListAllocator::new());
 
 pub struct KernelAllocator;
@@ -97,7 +97,13 @@ impl LinkedListAllocator {
             if excess_after >= Self::min_region_size() {
                 self.insert_region(alloc_end, excess_after);
             }
-
+            crate::klog!(
+                "[heap] allocate size={} align={} -> ptr=0x{:016X} remaining={}\n",
+                size,
+                align,
+                alloc_start,
+                self.remaining()
+            );
             return alloc_start as *mut u8;
         }
 
@@ -210,6 +216,11 @@ pub fn init() {
     klog!("[heap] allocator ready ({} bytes)\n", HEAP_SIZE);
 }
 
+pub fn bounds() -> (usize, usize) {
+    let start = core::ptr::addr_of!(HEAP_SPACE) as usize;
+    (start, start + HEAP_SIZE)
+}
+
 pub fn remaining_bytes() -> usize {
     let allocator = ALLOCATOR.lock();
     allocator.remaining()
@@ -256,7 +267,16 @@ pub unsafe extern "C" fn __rustc_mangled_alloc(size: usize, align: usize) -> *mu
 #[no_mangle]
 pub unsafe extern "C" fn __rust_alloc(size: usize, align: usize) -> *mut u8 {
     match layout_from_size_align(size, align) {
-        Some(layout) => allocate(layout),
+        Some(layout) => {
+            let ptr = allocate(layout);
+            crate::klog!(
+                "[heap] __rust_alloc size={} align={} -> ptr=0x{:016X}\n",
+                size,
+                align,
+                ptr as u64
+            );
+            ptr
+        }
         None => core::ptr::null_mut(),
     }
 }
@@ -269,6 +289,12 @@ pub unsafe extern "C" fn __rust_alloc_zeroed(size: usize, align: usize) -> *mut 
             if !ptr.is_null() {
                 ptr::write_bytes(ptr, 0, size);
             }
+            crate::klog!(
+                "[heap] __rust_alloc_zeroed size={} align={} -> ptr=0x{:016X}\n",
+                size,
+                align,
+                ptr as u64
+            );
             ptr
         }
         None => core::ptr::null_mut(),
@@ -338,8 +364,15 @@ pub unsafe extern "C" fn __rust_realloc(
     }
 
     let copy_size = core::cmp::min(old_size, new_size);
-    copy_nonoverlapping(ptr, new_ptr, copy_size);
+    copy(ptr, new_ptr, copy_size);
     __rust_dealloc(ptr, old_size, align);
+    crate::klog!(
+        "[heap] __rust_realloc old_size={} new_size={} align={} -> ptr=0x{:016X}\n",
+        old_size,
+        new_size,
+        align,
+        new_ptr as u64
+    );
     new_ptr
 }
 

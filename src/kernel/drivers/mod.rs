@@ -144,7 +144,7 @@ impl DriverRegistry {
 
         unsafe {
             if self.len > 0 {
-                ptr::copy_nonoverlapping(self.slots, new_ptr, self.len);
+                ptr::copy(self.slots, new_ptr, self.len);
             }
 
             for index in self.len..new_capacity {
@@ -201,7 +201,10 @@ pub fn init() {
 }
 
 pub fn register_block(device: &'static dyn BlockDevice) -> Result<(), DriverError> {
-    device.init().map_err(|_| DriverError::InitFailed)?;
+    device.init().map_err(|err| {
+        klog!("[driver] block device '{}' init failed: {:?}\n", device.name(), err);
+        DriverError::InitFailed
+    })?;
     let mut registry = REGISTRY.lock();
     registry.register_block(device)?;
     klog!("[driver] registered block device '{}'\n", device.name());
@@ -257,11 +260,14 @@ pub fn block_device_by_name(name: &str) -> Option<&'static dyn BlockDevice> {
     let registry = REGISTRY.lock();
     for slot in registry.iter() {
         if let Some(dev) = slot.as_block() {
+            klog!("[driver] block_device_by_name checking '{}' against '{}'\n", dev.name(), name);
             if dev.name() == name {
+                klog!("[driver] block_device_by_name found '{}'\n", name);
                 return Some(dev);
             }
         }
     }
+    klog!("[driver] block_device_by_name '{}' not found\n", name);
     None
 }
 

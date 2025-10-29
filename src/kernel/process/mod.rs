@@ -16,6 +16,7 @@ use crate::vfs::{VfsError, VfsFile};
 use crate::arch::x86_64::kernel::interrupts::InterruptFrame;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::x86_64::kernel::{
+    gdt,
     mmu,
     paging::{self, FLAG_NO_EXECUTE, FLAG_USER, FLAG_WRITABLE},
     usermode,
@@ -389,9 +390,13 @@ impl Process {
         is_idle: bool,
         credentials: Credentials,
     ) -> Result<Self, ProcessError> {
-        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| ProcessError::StackAllocationFailed)?;
+        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| {
+            klog!("[process] Process::new_user layout creation failed size={} align=16\n", KERNEL_STACK_SIZE);
+            ProcessError::StackAllocationFailed
+        })?;
         let stack_ptr = unsafe { heap::allocate(layout) };
         if stack_ptr.is_null() {
+            klog!("[process] Process::new_user heap allocation returned null\n");
             return Err(ProcessError::StackAllocationFailed);
         }
 
@@ -461,24 +466,100 @@ impl Process {
         path: &'static str,
         credentials: Credentials,
     ) -> Result<Self, ProcessError> {
+        klog!(
+            "[process] Process::new_user start pid={} name='{}' parent={:?} path='{}'\n",
+            pid,
+            name,
+            parent,
+            path
+        );
+
+        klog!(
+            "[process] Process::new_user heap remaining at start={}\n",
+            heap::remaining_bytes()
+        );
+
         let (image, data) = user::loader::load_elf(path).map_err(|err| match err {
             user::loader::LoaderError::File(user::loader::FileError::NotFound) => ProcessError::PathNotFound,
             user::loader::LoaderError::File(_) => ProcessError::UserImageIo,
             user::loader::LoaderError::Elf(_) => ProcessError::InvalidElf,
         })?;
 
+        klog!(
+            "[process] Process::new_user ELF loaded entry=0x{:016X} segments={} data_len={}\n",
+            image.entry,
+            image.segments.len(),
+            data.len()
+        );
+
         let (address_space, user_stack) = create_default_user_address_space()?;
 
-        map_user_segments(&address_space, &image, &data)?;
+        klog!(
+            "[process] Process::new_user address space cr3=0x{:016X} stack_top=0x{:016X} size={}\n",
+            address_space.cr3(),
+            user_stack.top(),
+            user_stack.size()
+        );
 
-        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| ProcessError::StackAllocationFailed)?;
+        klog!(
+            "[process] Process::new_user heap remaining after address_space={}\n",
+            heap::remaining_bytes()
+        );
+
+        map_user_segments(&address_space, &image, &data)?;
+        klog!("[process] Process::new_user segments mapped pid={}\n", pid);
+
+        klog!(
+            "[process] Process::new_user heap remaining after segments={}\n",
+            heap::remaining_bytes()
+        );
+
+        klog!(
+            "[process] Process::new_user heap remaining before stack alloc={}\n",
+            heap::remaining_bytes()
+        );
+
+        let remaining_before = heap::remaining_bytes();
+        let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).map_err(|_| {
+            klog!(
+                "[process] Process::new_user kernel stack layout error size={} remaining={}\n",
+                KERNEL_STACK_SIZE,
+                remaining_before
+            );
+            ProcessError::StackAllocationFailed
+        })?;
+
+        klog!(
+            "[process] Process::new_user allocating kernel stack size={} align=16 remaining_before={}\n",
+            KERNEL_STACK_SIZE,
+            remaining_before
+        );
+
         let stack_ptr = unsafe { heap::allocate(layout) };
         if stack_ptr.is_null() {
+            let remaining_after = heap::remaining_bytes();
+            klog!(
+                "[process] Process::new_user kernel stack allocation failed remaining_after={}\n",
+                remaining_after
+            );
             return Err(ProcessError::StackAllocationFailed);
         }
 
+        let remaining_after = heap::remaining_bytes();
+        klog!(
+            "[process] Process::new_user kernel stack allocation succeeded ptr=0x{:016X} remaining_after={}\n",
+            stack_ptr as u64,
+            remaining_after
+        );
+
         let stack_top = unsafe { stack_ptr.add(KERNEL_STACK_SIZE) } as u64;
         let mut aligned_top = stack_top & !0xFu64;
+
+        klog!(
+            "[process] Process::new_user kernel stack allocated ptr=0x{:016X} top=0x{:016X}\n",
+            stack_ptr as u64,
+            stack_top
+        );
 
         let mut context = Context::new();
         context.rsp = aligned_top;
@@ -487,12 +568,24 @@ impl Process {
         context.r15 = image.entry;
         context.r14 = user_stack.top();
 
+        klog!(
+            "[process] Process::new_user context prepared rsp=0x{:016X} rip=0x{:016X} entry=0x{:016X}\n",
+            context.rsp,
+            context.rip,
+            image.entry
+        );
+
         unsafe {
             aligned_top = aligned_top.saturating_sub(8);
             (aligned_top as *mut u64).write(process_exit as u64);
             context.rsp = aligned_top;
             context.rbp = aligned_top;
         }
+
+        klog!(
+            "[process] Process::new_user stack sentinel pushed new_rsp=0x{:016X}\n",
+            context.rsp
+        );
 
         let fds: [Option<FileDescriptor>; MAX_FDS] = array::from_fn(|_| None);
 
@@ -524,6 +617,8 @@ impl Process {
             permissions: MemoryPermissions::read_write(),
         })?;
 
+        klog!("[process] Process::new_user kernel stack region registered pid={}\n", pid);
+
         let console_device = console::driver();
         process.set_fd(STDOUT_FD, FileDescriptor::Char(console_device))?;
         process.set_fd(STDERR_FD, FileDescriptor::Char(console_device))?;
@@ -534,6 +629,8 @@ impl Process {
         if let Some(file) = crate::vfs::ata::AtaScratchFile::get() {
             process.set_fd(SCRATCH_FD, FileDescriptor::Vfs(VfsHandle::new(file)))?;
         }
+
+        klog!("[process] Process::new_user file descriptors initialised pid={}\n", pid);
 
         Ok(process)
     }
@@ -799,7 +896,7 @@ impl MemoryRegionList {
 
         unsafe {
             if self.len > 0 {
-                ptr::copy_nonoverlapping(self.regions, new_ptr, self.len);
+                ptr::copy(self.regions, new_ptr, self.len);
             }
         }
 
@@ -905,6 +1002,13 @@ impl ProcessTable {
         path: &'static str,
     ) -> Result<Pid, ProcessError> {
         let pid = self.allocate_pid()?;
+        klog!(
+            "[process] table.spawn_user_process allocating pid={} name='{}' parent={:?} path='{}'\n",
+            pid,
+            name,
+            parent,
+            path
+        );
         let credentials = if let Some(parent_pid) = parent {
             self.get(parent_pid)
                 .map(|process| process.credentials)
@@ -913,8 +1017,23 @@ impl ProcessTable {
             Credentials::root()
         };
 
+        klog!(
+            "[process] table.spawn_user_process credentials ready uid={}/{} gid={}/{} privileged={}\n",
+            credentials.real_uid(),
+            credentials.effective_uid(),
+            credentials.real_gid(),
+            credentials.effective_gid(),
+            credentials.is_privileged()
+        );
+
         let process = Process::new_user(pid, name, parent, path, credentials)?;
+        klog!(
+            "[process] table.spawn_user_process new_user constructed pid={} state={:?}\n",
+            pid,
+            process.state
+        );
         self.push(process)?;
+        klog!("[process] table.spawn_user_process pushed pid={} total={}\n", pid, self.len);
         Ok(pid)
     }
 
@@ -973,7 +1092,7 @@ impl ProcessTable {
 
         unsafe {
             if self.len > 0 {
-                ptr::copy_nonoverlapping(self.entries, new_ptr, self.len);
+                ptr::copy(self.entries, new_ptr, self.len);
             }
         }
 
@@ -1144,13 +1263,25 @@ pub fn spawn_kernel_process(name: &'static str, entry: ProcessEntry) -> Result<P
 }
 
 pub fn spawn_user_process(name: &'static str, path: &'static str) -> Result<Pid, ProcessError> {
+    klog!("[process] spawn_user_process enter name='{}' path='{}'\n", name, path);
+
     let mut table = PROCESS_TABLE.lock();
     if !table.initialized {
+        klog!("[process] spawn_user_process aborted: table not initialised\n");
         return Err(ProcessError::NotInitialized);
     }
+
     let parent = current_pid();
+    klog!(
+        "[process] spawn_user_process parent={:?} table_len={} idle={:?} init={:?}\n",
+        parent,
+        table.len,
+        table.idle_pid,
+        table.init_pid
+    );
+
     let pid = table.spawn_user_process(name, parent, path)?;
-    klog!("[process] spawned user '{}' pid={} path={}\n", name, pid, path);
+    klog!("[process] spawn_user_process success pid={} name='{}' path='{}'\n", pid, name, path);
     Ok(pid)
 }
 
@@ -1172,6 +1303,7 @@ pub fn start_scheduler() -> ! {
 
     loop {
         if !schedule_internal() {
+            klog!("[process] start_scheduler idle spin\n");
             core::hint::spin_loop();
         }
     }
@@ -1180,13 +1312,17 @@ pub fn start_scheduler() -> ! {
 }
 
 pub fn yield_now() {
+    klog!("[process] yield_now invoked\n");
     let _ = schedule_internal();
 }
 
 fn reschedule() {
+    klog!("[process] reschedule begin\n");
     while !schedule_internal() {
+        klog!("[process] reschedule retry\n");
         core::hint::spin_loop();
     }
+    klog!("[process] reschedule complete\n");
 }
 
 pub fn block_current(channel: WaitChannel) -> Result<(), ProcessError> {
@@ -1390,22 +1526,33 @@ pub fn free_for_process(pid: Pid, ptr: *mut u8) -> Result<(), ProcessError> {
 }
 
 fn schedule_internal() -> bool {
+    //klog!("[process] schedule_internal enter\n");
+
     let (current_ctx, next_ctx, current_space, next_space, next_pid) = {
         let mut table = PROCESS_TABLE.lock();
         if table.len == 0 {
+            //klog!("[process] schedule_internal no processes\n");
             return false;
         }
 
         let current_pid = current_pid();
+        //klog!("[process] schedule_internal current_pid={:?}\n", current_pid);
         let current_index = current_pid.and_then(|pid| table.find_index_by_pid(pid));
+        //klog!("[process] schedule_internal current_index={:?}\n", current_index);
 
         let next_index = match table.next_ready_index(current_index) {
             Some(idx) => idx,
-            None => return false,
+            None => {
+                //klog!("[process] schedule_internal no ready process\n");
+                return false;
+            }
         };
+
+        //klog!("[process] schedule_internal selected next_index={}\n", next_index);
 
         if let Some(idx) = current_index {
             if idx == next_index {
+                //klog!("[process] schedule_internal staying on same index={}\n", idx);
                 return false;
             }
         }
@@ -1421,6 +1568,7 @@ fn schedule_internal() -> bool {
             if let Some(process) = slice.get_mut(idx) {
                 if process.state == ProcessState::Running {
                     process.state = ProcessState::Ready;
+                    //klog!("[process] schedule_internal demoted pid={} -> Ready\n", process.pid);
                 }
             }
         }
@@ -1428,15 +1576,48 @@ fn schedule_internal() -> bool {
         if let Some(process) = slice.get_mut(next_index) {
             process.state = ProcessState::Running;
             process.cpu_slices = process.cpu_slices.saturating_add(1);
+            klog!(
+                "[sched] promote pid={} slices={} kind={:?}\n",
+                process.pid,
+                process.cpu_slices,
+                process.address_space.kind()
+            );
         }
 
         let next_pid = slice[next_index].pid;
         let next_ctx_ptr: *const Context = &slice[next_index].context;
 
+        #[cfg(target_arch = "x86_64")]
+        {
+            let kernel_rsp = slice[next_index].context.rsp;
+            gdt::set_kernel_stack(kernel_rsp);
+        }
+/*
+        klog!(
+            "[process] schedule_internal context next pid={} rip=0x{:016X} rsp=0x{:016X}\n",
+            next_pid,
+            slice[next_index].context.rip,
+            slice[next_index].context.rsp
+        );
+*/
         let current_ctx_ptr: *mut Context = match current_index {
             Some(idx) => &mut slice[idx].context as *mut Context,
             None => ptr::addr_of_mut!(BOOT_CONTEXT),
         };
+
+        if let Some(idx) = current_index {
+            /*
+            klog!(
+                "[process] schedule_internal current ctx pid={} rip=0x{:016X} rsp=0x{:016X}\n",
+                slice[idx].pid,
+                slice[idx].context.rip,
+                slice[idx].context.rsp
+            );
+
+             */
+        } else {
+            //klog!("[process] schedule_internal using boot context\n");
+        }
 
         (current_ctx_ptr, next_ctx_ptr, current_space, next_space, next_pid)
     };
@@ -1447,15 +1628,32 @@ fn schedule_internal() -> bool {
             Some(space) => space.cr3() != next_space.cr3(),
             None => true,
         };
+        /*
+        klog!(
+            "[process] schedule_internal cr3 current={:?} next=0x{:016X} switch={}\n",
+            current_space.map(|space| space.cr3()),
+            next_space.cr3(),
+            need_switch
+        );
+
+         */
         if need_switch {
             mmu::write_cr3(next_space.cr3());
+            //klog!("[process] schedule_internal cr3 switched\n");
         }
     }
 
     set_current_pid(next_pid);
+    klog!(
+        "[sched] switch CURRENT_PID={} cr3_current={:?} cr3_next=0x{:016X}\n",
+        next_pid,
+        current_space.map(|space| space.cr3()),
+        next_space.cr3()
+    );
     unsafe {
         context_switch(current_ctx, next_ctx);
     }
+    //klog!("[process] schedule_internal context_switch returned\n");
     true
 }
 
@@ -1761,6 +1959,11 @@ pub fn write_user_buffer(
 pub fn create_user_address_space_with_stack(
     stack_pages: usize,
 ) -> Result<(AddressSpace, UserStack), ProcessError> {
+    klog!(
+        "[process] create_user_address_space_with_stack stack_pages={} requested\n",
+        stack_pages
+    );
+
     if stack_pages == 0 {
         return Err(ProcessError::AddressSpaceAllocationFailed);
     }
@@ -1768,16 +1971,42 @@ pub fn create_user_address_space_with_stack(
     let pml4_phys = paging::clone_kernel_pml4()
         .map_err(|_| ProcessError::AddressSpaceAllocationFailed)?;
 
+    klog!(
+        "[process] create_user_address_space_with_stack cloned kernel pml4 phys=0x{:016X}\n",
+        pml4_phys
+    );
+
     let address_space = AddressSpace::with_cr3(pml4_phys, AddressSpaceKind::User);
+
+    klog!(
+        "[process] create_user_address_space_with_stack address_space kind={:?}\n",
+        address_space.kind()
+    );
 
     let mut current_top = user::space::stack_top();
     let stack_size = stack_pages
         .checked_mul(paging::PAGE_SIZE)
         .ok_or(ProcessError::AddressSpaceAllocationFailed)?;
 
+    klog!(
+        "[process] create_user_address_space_with_stack stack_top=0x{:016X} size={} bytes\n",
+        current_top,
+        stack_size
+    );
+
+    klog!(
+        "[process] create_user_address_space_with_stack heap remaining before stack pages={}\n",
+        heap::remaining_bytes()
+    );
+
     for _ in 0..stack_pages {
         let frame = phys::allocate_frame().ok_or(ProcessError::AddressSpaceAllocationFailed)?;
         current_top = current_top.saturating_sub(paging::PAGE_SIZE as u64);
+        klog!(
+            "[process] create_user_address_space_with_stack map stack page virt=0x{:016X} frame=0x{:016X}\n",
+            current_top,
+            frame.start()
+        );
         paging::map_page(
             pml4_phys,
             current_top,
@@ -1788,11 +2017,21 @@ pub fn create_user_address_space_with_stack(
     }
 
     let user_stack = UserStack::new(user::space::stack_top(), stack_size);
+    klog!(
+        "[process] create_user_address_space_with_stack complete top=0x{:016X} size={}\n",
+        user_stack.top(),
+        user_stack.size()
+    );
+    klog!(
+        "[process] create_user_address_space_with_stack heap remaining after stack pages={}\n",
+        heap::remaining_bytes()
+    );
     Ok((address_space, user_stack))
 }
 
 #[cfg(target_arch = "x86_64")]
 pub fn create_default_user_address_space() -> Result<(AddressSpace, UserStack), ProcessError> {
+    klog!("[process] create_default_user_address_space enter\n");
     create_user_address_space_with_stack(user::space::DEFAULT_STACK_PAGES)
 }
 
@@ -1801,9 +2040,22 @@ fn map_user_segments(
     image: &user::elf::ElfImage,
     data: &[u8],
 ) -> Result<(), ProcessError> {
+    klog!(
+        "[process] map_user_segments enter segments={} cr3=0x{:016X}\n",
+        image.segments.len(),
+        address_space.cr3()
+    );
+
     for segment in &image.segments {
         let start = align_down(segment.vaddr, paging::PAGE_SIZE as u64);
         let end = align_up(segment.vaddr + segment.memsz, paging::PAGE_SIZE as u64);
+
+        klog!(
+            "[process] map_user_segments segment start=0x{:016X} end=0x{:016X} flags=0x{:X}\n",
+            start,
+            end,
+            segment.flags
+        );
 
         let mut page = start;
         while page < end {
@@ -1812,6 +2064,12 @@ fn map_user_segments(
             unsafe {
                 ptr::write_bytes(frame_ptr, 0, paging::PAGE_SIZE);
             }
+
+            klog!(
+                "[process] map_user_segments map page virt=0x{:016X} frame=0x{:016X}\n",
+                page,
+                frame.start()
+            );
 
             let mut flags = FLAG_USER;
             if user::elf::segment_flags_writable(segment.flags) {
@@ -1823,6 +2081,13 @@ fn map_user_segments(
 
             paging::map_page(address_space.cr3(), page, frame.start(), flags)
                 .map_err(|_| ProcessError::AddressSpaceAllocationFailed)?;
+
+            klog!(
+                "[process] map_user_segments mapped virt=0x{:016X} -> phys=0x{:016X} flags=0x{:X}\n",
+                page,
+                frame.start(),
+                flags
+            );
 
             let seg_file_end = segment.vaddr + segment.filesz;
             let copy_start = core::cmp::max(segment.vaddr, page);
@@ -1845,12 +2110,26 @@ fn map_user_segments(
                         len,
                     );
                 }
+
+                klog!(
+                    "[process] map_user_segments copied len={} from file_offset=0x{:X} to virt=0x{:016X} pid_segment_base=0x{:016X}\n",
+                    len,
+                    src_index,
+                    page + dst_offset as u64,
+                    segment.vaddr
+                );
             }
 
             page = page.saturating_add(paging::PAGE_SIZE as u64);
         }
+
+        klog!(
+            "[process] map_user_segments after segment heap remaining={}\n",
+            heap::remaining_bytes()
+        );
     }
 
+    klog!("[process] map_user_segments complete\n");
     Ok(())
 }
 

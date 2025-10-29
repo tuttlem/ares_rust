@@ -15,6 +15,7 @@ pub(crate) unsafe fn write_cr3(value: u64) {
 }
 
 pub(crate) const KERNEL_VMA_BASE: u64 = 0xFFFF_8000_0000_0000;
+pub(crate) const KERNEL_LINK_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
 pub(crate) fn phys_to_virt(phys: u64) -> u64 {
     phys + KERNEL_VMA_BASE

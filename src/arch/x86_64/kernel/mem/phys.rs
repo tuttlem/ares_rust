@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
+use crate::arch::x86_64::kernel::mmu;
 use crate::klog;
 use crate::sync::spinlock::SpinLock;
+use crate::mem::heap;
 
 const MAX_REGIONS: usize = 128;
 const PAGE_SIZE: u64 = 4096;
-const RESERVED_END: u64 = 0x0010_0000; // keep first 1 MiB reserved
+const RESERVED_END: u64 = 0x0010_0000; // keep first 1 MiB reserved (legacy floor)
 
 pub const FRAME_SIZE: u64 = PAGE_SIZE;
 
@@ -150,6 +152,7 @@ impl FrameAllocator {
     }
 
     fn advance_to_next_region(&mut self, map: &MemoryMap) {
+        let reserve_limit = reserved_limit();
         while self.region_index < map.count {
             let region = map.regions[self.region_index];
             self.region_index += 1;
@@ -157,11 +160,11 @@ impl FrameAllocator {
                 continue;
             }
             let end = region.end();
-            if end <= RESERVED_END {
+            if end <= reserve_limit {
                 continue;
             }
 
-            let start_base = region.base.max(RESERVED_END);
+            let start_base = region.base.max(reserve_limit);
             let start = align_up_u64(start_base, PAGE_SIZE);
 
             if start < end {
@@ -370,6 +373,60 @@ unsafe fn parse_memory_map_tag(ptr: *const MemoryMapTagHeader, map: &mut MemoryM
         }
         current += entry_size;
     }
+}
+
+fn reserved_limit() -> u64 {
+    let kernel_end = unsafe {
+        extern "C" {
+            static _bssEnd: u8;
+            static _loadStart: u8;
+        }
+
+        let end_ptr = &_bssEnd as *const u8 as u64;
+        klog!("[phys] _bssEnd virt=0x{:016X}\n", end_ptr);
+        if end_ptr >= mmu::KERNEL_VMA_BASE {
+            end_ptr - mmu::KERNEL_VMA_BASE
+        } else {
+            end_ptr
+        }
+    };
+
+    let start = unsafe {
+        extern "C" {
+            static _loadStart: u8;
+        }
+
+        let start_ptr = &_loadStart as *const u8 as u64;
+        klog!("[phys] _loadStart virt=0x{:016X}\n", start_ptr);
+        if start_ptr >= mmu::KERNEL_VMA_BASE {
+            start_ptr - mmu::KERNEL_VMA_BASE
+        } else {
+            start_ptr
+        }
+    };
+
+    klog!(
+        "[phys] reserved_limit kernel phys start=0x{:X} end=0x{:X}\n",
+        start,
+        kernel_end
+    );
+
+    let (heap_start_virt, heap_end_virt) = heap::bounds();
+    let heap_end_phys = if heap_end_virt >= mmu::KERNEL_LINK_BASE as usize {
+        heap_end_virt as u64 - mmu::KERNEL_LINK_BASE
+    } else {
+        heap_end_virt as u64
+    };
+
+    klog!(
+        "[phys] heap bounds virt start=0x{:016X} end=0x{:016X} phys_end=0x{:X}\n",
+        heap_start_virt,
+        heap_end_virt,
+        heap_end_phys
+    );
+
+    let limit = core::cmp::max(core::cmp::max(RESERVED_END, kernel_end), heap_end_phys);
+    align_up_u64(limit, PAGE_SIZE)
 }
 
 fn align_up(value: usize, align: usize) -> usize {
